@@ -6,7 +6,7 @@ import { InMemoryOutbox } from "@/events/outbox";
 import { InMemoryJobRunner } from "@/jobs/runner";
 import { requireWorkspaceId } from "@/domain/workspaces";
 
-const workspaceId = "00000000-0000-0000-0000-000000000001";
+const workspaceId = "11111111-1111-4111-8111-111111111111";
 
  describe("foundation contracts", () => {
   it("defaults sending to disabled without provider configuration", () => {
@@ -16,7 +16,7 @@ const workspaceId = "00000000-0000-0000-0000-000000000001";
   });
 
   it("rejects access to another workspace", () => {
-    expect(() => requireWorkspaceId("00000000-0000-0000-0000-000000000099", { workspaceId, userId: "user", role: "owner" })).toThrow("Workspace access denied");
+    expect(() => requireWorkspaceId("99999999-9999-4999-8999-999999999999", { workspaceId, userId: "user", role: "owner" })).toThrow("Workspace access denied");
   });
 
   it("deduplicates jobs and dead-letters after bounded retries", async () => {

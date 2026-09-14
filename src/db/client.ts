@@ -1,16 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { getRuntimeConfig } from "@/config/env";
-
-export type Database = {
-  public: {
-    Tables: Record<string, never>;
-    Views: Record<string, never>;
-    Functions: Record<string, never>;
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-};
+import type { Database } from "@/db/types";
 
 export function getSupabaseAdminClient(): SupabaseClient<Database> | null {
   const config = getRuntimeConfig();
