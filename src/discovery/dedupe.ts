@@ -38,8 +38,8 @@ export function partitionAgainstKnown<T extends Pick<DiscoveryCandidateInput, "p
 }
 
 function mergeMissingFields<T extends object>(primary: T, secondary: T): T {
-  const merged: Record<string, unknown> = { ...primary };
-  for (const [key, value] of Object.entries(secondary)) {
+  const merged: Record<string, unknown> = { ...(primary as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(secondary as Record<string, unknown>)) {
     const current = merged[key];
     const empty = current === null || current === undefined || current === "" || (Array.isArray(current) && current.length === 0);
     if (empty && value !== null && value !== undefined) merged[key] = value;

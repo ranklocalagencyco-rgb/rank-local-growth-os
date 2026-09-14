@@ -51,7 +51,9 @@ function parseHttpUrl(input: string | null | undefined): URL | null {
   if (!input) return null;
   let raw = input.trim();
   if (!raw) return null;
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `http://${raw}`;
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw);
+  if (hasScheme && !/^https?:\/\//i.test(raw)) return null;
+  if (!hasScheme) raw = `http://${raw}`;
 
   let url: URL;
   try {
@@ -113,6 +115,8 @@ export function normalizePhone(input: string | null | undefined, countryCode = "
   if (!digits) return null;
 
   if (hasPlus) {
+    // "+44 (0)1895 ..." is a common UK presentation; the trunk zero is not part of the international form.
+    if (digits.startsWith("440")) digits = `44${digits.slice(3)}`;
     return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
   }
 

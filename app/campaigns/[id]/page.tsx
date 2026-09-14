@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { getRuntimeConfig } from "@/config/env";
+import type { WebsiteState } from "@/db/types";
 import { getCampaignDetail } from "@/data/discovery";
 import { getDiscoveryProviderReadiness } from "@/discovery/providers/registry";
 import { campaignStatusLabel, formatDate } from "@/domain/crm";
@@ -84,9 +85,9 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
             <tbody>
               {detail.candidates.map((candidate) => {
                 const prospect = candidate.resolved_prospect_id ? detail.prospectsById.get(candidate.resolved_prospect_id) ?? null : null;
-                const websiteState = prospect?.website_state ?? null;
+                const websiteState: WebsiteState | null = prospect?.website_state ?? null;
                 const notes = candidate.resolution_notes_json as { websiteState?: string; websiteUrl?: string | null; reason?: string; candidateProspectIds?: string[] };
-                const displayedState = websiteState ?? (typeof notes.websiteState === "string" ? (notes.websiteState as typeof websiteState) : null);
+                const displayedState: WebsiteState | null = websiteState ?? (typeof notes.websiteState === "string" ? (notes.websiteState as WebsiteState) : null);
                 return (
                   <tr key={candidate.id}>
                     <td>

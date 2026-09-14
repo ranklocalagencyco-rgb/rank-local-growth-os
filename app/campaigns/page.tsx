@@ -1,7 +1,5 @@
 import Link from "next/link";
 
-import Link from "next/link";
-
 import { getCampaigns } from "@/data/crm";
 import { getCandidateCounts } from "@/data/discovery";
 import { campaignStatusLabel } from "@/domain/crm";
