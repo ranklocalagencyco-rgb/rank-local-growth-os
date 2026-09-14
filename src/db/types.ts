@@ -1,5 +1,9 @@
 export type SendMode = "disabled" | "sandbox" | "live";
 export type WorkflowStatus = "queued" | "running" | "completed" | "failed" | "dead_letter";
+export type WebsiteState = "unknown" | "verified_website" | "unverified" | "likely_no_website" | "verified_no_website";
+export type CandidateWebsiteHint = "present" | "absent" | "unknown";
+export type CandidateStatus = "new" | "resolving" | "resolved" | "failed" | "expired";
+export type CandidateResolutionStatus = "pending" | "created" | "matched" | "ambiguous" | "rejected" | "failed";
 
 export type Campaign = {
 	id: string;
@@ -24,6 +28,14 @@ export type Campaign = {
 export type CampaignRun = {
 	id: string;
 	campaign_id: string;
+	workspace_id: string | null;
+	run_type: string;
+	requested_by: string | null;
+	job_id: string | null;
+	provider: string | null;
+	provider_requests: number;
+	search_units_total: number;
+	search_units_completed: number;
 	status: "queued" | "running" | "completed" | "failed";
 	started_at: string | null;
 	finished_at: string | null;
@@ -56,6 +68,9 @@ export type Prospect = {
 	current_opportunity_score: number | null;
 	current_score_version: string | null;
 	recommended_offer_id: string | null;
+	website_state: WebsiteState;
+	website_url: string | null;
+	website_verified_at: string | null;
 	created_at: string;
 	updated_at: string;
 };
@@ -71,6 +86,98 @@ export type ProspectSourceRef = {
 	last_seen_at: string;
 	retention_class: string;
 	metadata: Record<string, unknown>;
+};
+
+export type ProspectFieldEvidence = {
+	id: string;
+	workspace_id: string;
+	prospect_id: string;
+	field_name: string;
+	value_hash: string;
+	display_value: string | null;
+	source_type: string;
+	source_ref_id: string | null;
+	observed_at: string;
+	confidence: number | null;
+	retention_class: string;
+	is_current: boolean;
+	created_at: string;
+};
+
+export type ProspectWebsiteVerification = {
+	id: string;
+	workspace_id: string;
+	prospect_id: string;
+	candidate_id: string | null;
+	state: Exclude<WebsiteState, "unknown">;
+	website_url: string | null;
+	canonical_domain: string | null;
+	confidence: number;
+	signals_json: unknown[];
+	verifier_version: string;
+	verified_at: string;
+	is_current: boolean;
+	created_at: string;
+};
+
+export type DiscoveryCandidate = {
+	id: string;
+	workspace_id: string;
+	campaign_id: string;
+	campaign_run_id: string | null;
+	provider: string;
+	provider_ref: string;
+	status: CandidateStatus;
+	candidate_name: string | null;
+	candidate_category: string | null;
+	candidate_location: string | null;
+	candidate_website_state: CandidateWebsiteHint;
+	candidate_summary_json: Record<string, unknown>;
+	dedupe_key: string | null;
+	source_query_json: Record<string, unknown>;
+	retention_class: string;
+	first_seen_at: string;
+	last_seen_at: string;
+	expires_at: string | null;
+	content_purged_at: string | null;
+	resolution_status: CandidateResolutionStatus;
+	resolution_confidence: number | null;
+	resolution_notes_json: Record<string, unknown>;
+	resolved_prospect_id: string | null;
+	created_at: string;
+	updated_at: string;
+};
+
+export type JobRow = {
+	id: string;
+	workspace_id: string;
+	type: string;
+	idempotency_key: string;
+	payload: Record<string, unknown>;
+	status: WorkflowStatus;
+	attempts: number;
+	max_attempts: number;
+	run_after: string;
+	locked_at: string | null;
+	locked_by: string | null;
+	last_error: string | null;
+	trace_id: string;
+	created_at: string;
+	updated_at: string;
+	finished_at: string | null;
+};
+
+export type DomainEventRow = {
+	id: string;
+	workspace_id: string;
+	aggregate_type: string;
+	aggregate_id: string;
+	event_type: string;
+	idempotency_key: string;
+	payload: Record<string, unknown>;
+	occurred_at: string;
+	published_at: string | null;
+	attempts: number;
 };
 
 export type ActivityEvent = {
@@ -114,11 +221,25 @@ export type Database = {
 			campaign_runs: TableDefinition<CampaignRun>;
 			prospects: TableDefinition<Prospect>;
 			prospect_source_refs: TableDefinition<ProspectSourceRef>;
+			prospect_field_evidence: TableDefinition<ProspectFieldEvidence>;
+			prospect_website_verifications: TableDefinition<ProspectWebsiteVerification>;
+			discovery_candidates: TableDefinition<DiscoveryCandidate>;
+			jobs: TableDefinition<JobRow>;
+			domain_events: TableDefinition<DomainEventRow>;
 			activity_events: TableDefinition<ActivityEvent>;
 			suppressions: TableDefinition<Suppression>;
 		};
 		Views: Record<string, never>;
-		Functions: Record<string, never>;
+		Functions: {
+			claim_jobs: {
+				Args: { p_worker_id: string; p_limit?: number; p_stale_after?: string };
+				Returns: JobRow[];
+			};
+			purge_expired_discovery_content: {
+				Args: Record<string, never>;
+				Returns: number;
+			};
+		};
 		Enums: Record<string, never>;
 		CompositeTypes: Record<string, never>;
 	};
