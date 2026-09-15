@@ -1,6 +1,6 @@
 import type { SafeFetcher, SafeFetchResult } from "@/audit/safe-fetch";
 import { extractPageEvidence, type PageEvidence } from "@/audit/extract";
-import type { SiteSummary } from "@/audit/findings";
+import { renderingModeOf, type SiteSummary } from "@/audit/findings";
 import { parseRobotsTxt, parseSitemapXml } from "@/audit/sitemap";
 import { classifyPageRole, crawlPriority, isCrawlablePath, isSameSite, normalizeAuditUrl } from "@/audit/url";
 import type { AuditDiscoveredVia, WebsiteAuditPage } from "@/db/types";
@@ -135,6 +135,8 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
       jsonLdParseErrors: evidence?.jsonLdParseErrors ?? 0,
       hasLocalBusinessSchema: evidence?.hasLocalBusinessSchema ?? false,
       canonicalMatchesFinal: evidence?.canonicalUrl && result.finalUrl ? normalizeAuditUrl(evidence.canonicalUrl)?.key === finalNormalized?.key : null,
+      renderingMode: evidence?.renderingMode ?? "unknown",
+      renderingSignals: evidence?.renderingSignals ?? null,
     },
     fetched_at: input.fetchedAt,
   };
@@ -194,6 +196,8 @@ export function summariseSite(state: CrawlState, pages: Pick<WebsiteAuditPage, "
   const homepageFinalUrl = partial.homepageFinalUrl ?? null;
   const schemaTypes = new Set<string>();
   for (const page of html) for (const type of page.schema_types) schemaTypes.add(type);
+  const homepage = html.find((page) => page.page_role === "homepage") ?? null;
+  const homepageRenderingMode = homepage ? renderingModeOf(homepage) : "unknown";
   return {
     homepageUrl: partial.homepageUrl ?? "",
     homepageFinalUrl,
@@ -215,6 +219,9 @@ export function summariseSite(state: CrawlState, pages: Pick<WebsiteAuditPage, "
     pagesWithLocalBusinessSchema: html.filter((page) => page.evidence_json?.hasLocalBusinessSchema === true).length,
     schemaTypesSeen: [...schemaTypes].sort(),
     brokenInternalLinks: pages.filter((page) => page.fetch_ok && (page.http_status === 404 || page.http_status === 410) && page.discovered_from).length,
+    clientRenderedPages: html.filter((page) => renderingModeOf(page) === "client_rendered_likely").length,
+    homepageRenderingMode,
+    renderedContentEvaluated: homepageRenderingMode !== "client_rendered_likely",
   };
 }
 

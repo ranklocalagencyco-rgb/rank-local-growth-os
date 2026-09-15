@@ -1,3 +1,4 @@
+import { FINDING_TEXT } from "@/audit/findings";
 import type { AuditFindingSeverity, AuditPageRole, JobRow, WebsiteAuditRun } from "@/db/types";
 
 // Presentation helpers for website audits. Pure functions; labels describe evidence, never judgement.
@@ -42,26 +43,14 @@ export function pageRoleLabel(role: AuditPageRole): string {
   }
 }
 
-/** Neutral description of a finding code. */
+/** Static title of a finding code, owned by the rule catalogue. Unknown codes fall back to the code itself. */
 export function findingLabel(code: string): string {
-  switch (code) {
-    case "missing_title": return "Page has no title";
-    case "missing_meta_description": return "Page has no meta description";
-    case "missing_h1": return "Page has no H1";
-    case "multiple_h1": return "Page has more than one H1";
-    case "missing_canonical": return "Page has no canonical link";
-    case "page_noindex": return "Page is set to noindex";
-    case "missing_viewport": return "Page has no viewport meta tag";
-    case "no_structured_data": return "Page has no structured data";
-    case "broken_internal_link": return "Internal link returns 404/410";
-    case "no_localbusiness_schema": return "No LocalBusiness schema on crawled pages";
-    case "no_contact_page_detected": return "No contact page detected";
-    case "no_service_pages_detected": return "No service pages detected";
-    case "homepage_not_https": return "Homepage does not resolve to HTTPS";
-    case "robots_txt_missing": return "robots.txt not reachable";
-    case "sitemap_missing": return "No sitemap found";
-    default: return code.replace(/_/g, " ");
-  }
+  return FINDING_TEXT[code]?.title ?? code.replace(/_/g, " ");
+}
+
+/** Static one-sentence description of a finding code, owned by the rule catalogue. */
+export function findingSummary(code: string): string {
+  return FINDING_TEXT[code]?.summary ?? "No description is registered for this finding code.";
 }
 
 export function formatDurationMs(value: number | null): string {

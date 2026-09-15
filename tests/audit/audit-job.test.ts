@@ -49,7 +49,7 @@ class MemoryAuditStore implements AuditStore {
 
   constructor(prospect: Partial<AuditProspect> = {}, run: Partial<WebsiteAuditRun> = {}) {
     this.prospect = { id: prospectId, workspace_id: workspaceId, display_name: "A&B Roofing", website_state: "verified_website", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", ...prospect };
-    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "queued", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", crawler_version: "audit-crawler/v1", rules_version: "audit-rules/v1", started_at: null, completed_at: null, failed_at: null, pages_attempted: 0, pages_succeeded: 0, pages_failed: 0, error_summary: null, site_summary_json: {}, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
+    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "queued", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", crawler_version: "audit-crawler/v2", rules_version: "audit-rules/v2", started_at: null, completed_at: null, failed_at: null, pages_attempted: 0, pages_succeeded: 0, pages_failed: 0, error_summary: null, site_summary_json: {}, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
   }
   async getRun() { return this.run; }
   async getProspect() { return this.prospect; }
@@ -136,7 +136,7 @@ describe("website audit job", () => {
     expect(codes).toContain("page:missing_h1");
     expect(codes).not.toContain("site:no_localbusiness_schema");
     expect(codes).not.toContain("site:no_contact_page_detected");
-    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v1")).toBe(true);
+    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v2")).toBe(true);
     expect(store.activity).toEqual(["audit.completed"]);
     expect(store.events).toEqual([`audit.completed:${runId}`]);
   });
@@ -231,5 +231,37 @@ describe("website audit job", () => {
     expect(store.run.status).toBe("completed");
     expect(store.pages.find((page) => page.path === "/services/roofing")).toMatchObject({ fetch_ok: true, http_status: 503 });
     expect(store.run.pages_failed).toBe(2);
+  });
+
+  it("classifies a client-rendered app shell, suppresses content-dependent findings and says rendered content was not evaluated", async () => {
+    const shell = `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>BS Roof Services</title><meta name="description" content="Expert roofing services."><script type="module" crossorigin src="/assets/index-BQ3hONTC.js"></script></head><body><div id="root"></div></body></html>`;
+    const store = new MemoryAuditStore();
+    const fetchImpl = site({ "https://example.co.uk/": { body: shell }, "https://example.co.uk/robots.txt": { headers: { "content-type": "text/plain" }, body: "User-agent: *\n" } });
+    const outcome = await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
+
+    expect(outcome).toEqual({ status: "completed" });
+    expect(store.run).toMatchObject({ status: "completed", pages_attempted: 1, pages_succeeded: 1, pages_failed: 0 });
+    expect(fetchImpl.calls.filter((url) => !/robots\.txt|sitemap\.xml/.test(url))).toEqual(["https://example.co.uk/"]);
+    const home = store.pages[0];
+    expect(home.evidence_json).toMatchObject({ renderingMode: "client_rendered_likely", renderingSignals: { wordCount: 0, moduleScriptCount: 1, appBundleScriptCount: 1, emptyAppRoot: true } });
+    expect(store.run.site_summary_json).toMatchObject({ pagesCrawled: 1, clientRenderedPages: 1, homepageRenderingMode: "client_rendered_likely", renderedContentEvaluated: false });
+
+    const codes = store.findings.map((finding) => `${finding.scope}:${finding.code}`).sort();
+    expect(codes).toEqual(["page:missing_canonical", "site:client_rendered_site", "site:sitemap_missing"]);
+    const shellFinding = store.findings.find((finding) => finding.code === "client_rendered_site")!;
+    expect(shellFinding.evidence).toMatchObject({ renderedContentEvaluated: false, homepageRenderingMode: "client_rendered_likely", notEvaluated: expect.arrayContaining(["missing_h1", "no_contact_page_detected", "no_service_pages_detected", "no_localbusiness_schema", "no_structured_data"]) });
+    expect(store.activity).toEqual(["audit.completed"]);
+  });
+
+  it("a server-rendered site with a client-rendered widget page is not classified as a client-rendered site", async () => {
+    const widget = `<html><head><title>Book</title><script type="module" src="/assets/booking-9f8e7d6c.js"></script></head><body><div id="root"></div></body></html>`;
+    const store = new MemoryAuditStore();
+    const fetchImpl = site({ ...roofingSite, "https://example.co.uk/": { body: html("Home", '<a href="/services/roofing">Roofing</a><a href="/contact">Contact</a><a href="/blog/post-1">Post</a><a href="/book">Book</a>', '<script type="application/ld+json">{"@type":"RoofingContractor"}</script>') }, "https://example.co.uk/book": { body: widget } });
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
+    expect(store.run.site_summary_json).toMatchObject({ clientRenderedPages: 1, homepageRenderingMode: "server_rendered", renderedContentEvaluated: true });
+    const codes = store.findings.map((finding) => finding.code);
+    expect(codes).not.toContain("client_rendered_site");
+    expect(codes).toContain("missing_h1"); // /blog/post-1 is sparse server HTML, still judged
+    expect(store.findings.filter((finding) => finding.code === "missing_h1").map((finding) => (finding.evidence as { path: string }).path)).not.toContain("/book");
   });
 });
