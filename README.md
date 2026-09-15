@@ -21,6 +21,15 @@ npm run build
 
 Apply the migrations in `supabase/migrations/` in order (`001` through `005`) and then `supabase/seed.sql` through the Supabase SQL editor or Supabase CLI. Migrations are forward-only; rollback should be performed through a reviewed, environment-specific reverse migration.
 
+## AI engineering library
+
+Model-agnostic guidance for coding agents (Claude Code, Codex, Cursor, Windsurf, Gemini) lives in [`ai/`](ai/README.md): skills, standing rules, checklists, examples and scripts. `AGENTS.md` remains the constitution; `CLAUDE.md` and `.claude/` are thin Claude adapters. Before reporting any change complete, run the repository quality gate:
+
+```bash
+bash ai/scripts/quality-gate.sh            # tests, typecheck, lint, build, LLM-import scan
+bash ai/scripts/quality-gate.sh --with-migrations   # also validates migrations on Docker Postgres 16
+```
+
 ## Business discovery (campaign → candidates → prospects)
 
 Discovery runs as durable background jobs stored in Postgres (`jobs` table). Nothing long-running happens inside a web request.

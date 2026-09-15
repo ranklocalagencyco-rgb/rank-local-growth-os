@@ -48,3 +48,14 @@ After coding:
 5. List unresolved issues.
 
 Never claim completion if checks fail.
+
+## AI engineering library
+Canonical, model-agnostic procedures live in `ai/` (index: `ai/README.md`). Any coding agent loads the relevant skill before changing code:
+- `ai/skills/rank-local-architecture/SKILL.md` — every ticket; decision rules for tables, providers, jobs, outbound HTTP.
+- `ai/skills/ssrf-safe-http/SKILL.md` — any outbound request, crawling, verification or audit fetching.
+- `ai/skills/validate-migration/SKILL.md` — anything under `supabase/migrations/`.
+- `ai/skills/provider-adapter/SKILL.md` — provider/API adapters.
+- `ai/skills/quality-gate/SKILL.md` — before reporting completion.
+
+Rules always in force: `ai/rules/jobs-contract.md`; `ai/rules/no-llm-in-crawler.md` (enforced by `node ai/scripts/check-llm-imports.mjs --scan`).
+Quality gate: `bash ai/scripts/quality-gate.sh` (add `--with-migrations` when migrations changed). Tool-specific entry points (`CLAUDE.md`, `.claude/`) are thin adapters and never hold canonical content.
