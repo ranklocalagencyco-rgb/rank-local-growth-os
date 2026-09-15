@@ -62,6 +62,13 @@ export function isBlockedIpAddress(address: string): boolean {
     if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // fc00::/7
     const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
     if (mapped) return isBlockedIpAddress(mapped[1]);
+    // WHATWG URL parsing serialises IPv4-mapped addresses in hex form (::ffff:a00:1 for 10.0.0.1).
+    const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex) {
+      const high = parseInt(mappedHex[1], 16);
+      const low = parseInt(mappedHex[2], 16);
+      return isBlockedIpAddress(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
+    }
     if (lower.startsWith("64:ff9b:")) return true; // NAT64 well-known prefix
     return false;
   }

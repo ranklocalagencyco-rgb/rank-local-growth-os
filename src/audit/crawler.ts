@@ -1,0 +1,229 @@
+import type { SafeFetcher, SafeFetchResult } from "@/audit/safe-fetch";
+import { extractPageEvidence, type PageEvidence } from "@/audit/extract";
+import type { SiteSummary } from "@/audit/findings";
+import { parseRobotsTxt, parseSitemapXml } from "@/audit/sitemap";
+import { classifyPageRole, crawlPriority, isCrawlablePath, isSameSite, normalizeAuditUrl } from "@/audit/url";
+import type { AuditDiscoveredVia, WebsiteAuditPage } from "@/db/types";
+import type { AuditPageInsert } from "@/audit/store";
+import { normalizeDomain } from "@/domain/identifiers";
+
+// Bounded crawl planning and per-page processing (RL-051). Pure apart from the injected SafeFetcher.
+// State is a plain JSON object persisted on the run so a job can stop at its deadline and resume.
+
+export const MAX_FRONTIER = 200;
+export const MAX_AUX_REQUESTS = 6;
+export const MAX_SITEMAP_FILES = 3;
+const READ_TEXT_TYPES = /^(?:text\/plain|text\/xml|application\/xml|application\/rss\+xml|application\/atom\+xml|application\/x-gzip|application\/octet-stream)$/;
+
+export type FrontierEntry = { url: string; key: string; via: AuditDiscoveredVia; from: string | null; priority: number };
+
+export type CrawlState = {
+  phase: "start" | "crawl" | "finalize";
+  siteDomain: string | null;
+  frontier: FrontierEntry[];
+  visited: string[];
+  finalKeys: string[];
+  duplicateRedirects: number;
+  auxRequests: number;
+  summary: Partial<SiteSummary>;
+};
+
+export function initialCrawlState(): CrawlState {
+  return { phase: "start", siteDomain: null, frontier: [], visited: [], finalKeys: [], duplicateRedirects: 0, auxRequests: 0, summary: {} };
+}
+
+export function parseCrawlState(value: unknown): CrawlState {
+  const base = initialCrawlState();
+  if (!value || typeof value !== "object") return base;
+  const record = value as Partial<CrawlState>;
+  return {
+    phase: record.phase === "crawl" || record.phase === "finalize" ? record.phase : "start",
+    siteDomain: typeof record.siteDomain === "string" ? record.siteDomain : null,
+    frontier: Array.isArray(record.frontier) ? record.frontier.filter((entry): entry is FrontierEntry => Boolean(entry && typeof entry === "object" && typeof (entry as FrontierEntry).url === "string" && typeof (entry as FrontierEntry).key === "string")) : [],
+    visited: Array.isArray(record.visited) ? record.visited.filter((key): key is string => typeof key === "string") : [],
+    finalKeys: Array.isArray(record.finalKeys) ? record.finalKeys.filter((key): key is string => typeof key === "string") : [],
+    duplicateRedirects: typeof record.duplicateRedirects === "number" ? record.duplicateRedirects : 0,
+    auxRequests: typeof record.auxRequests === "number" ? record.auxRequests : 0,
+    summary: record.summary && typeof record.summary === "object" ? record.summary : {},
+  };
+}
+
+/** Adds same-site, crawlable, unseen URLs to the frontier, keeping it bounded and sorted by priority. */
+export function enqueueFrontier(state: CrawlState, candidates: { url: string; via: AuditDiscoveredVia; from: string | null }[]): number {
+  if (!state.siteDomain) return 0;
+  const known = new Set([...state.visited, ...state.frontier.map((entry) => entry.key)]);
+  let added = 0;
+  for (const candidate of candidates) {
+    const normalized = normalizeAuditUrl(candidate.url);
+    if (!normalized || known.has(normalized.key)) continue;
+    if (!isSameSite(normalized.url, state.siteDomain) || !isCrawlablePath(normalized.path)) continue;
+    known.add(normalized.key);
+    state.frontier.push({ url: normalized.url, key: normalized.key, via: candidate.via, from: candidate.from, priority: crawlPriority(normalized.path, candidate.via) });
+    added += 1;
+  }
+  state.frontier.sort((a, b) => a.priority - b.priority);
+  if (state.frontier.length > MAX_FRONTIER) state.frontier.length = MAX_FRONTIER;
+  return added;
+}
+
+export function nextFrontierEntry(state: CrawlState): FrontierEntry | null {
+  const entry = state.frontier.shift() ?? null;
+  if (entry) state.visited.push(entry.key);
+  return entry;
+}
+
+export type PageOutcome = { page: AuditPageInsert | null; evidence: PageEvidence | null; duplicateOf: string | null };
+
+/** Turns a fetch result into a page row (evidence extracted for HTML successes). Returns no row for a redirect onto an already-crawled URL. */
+export function buildPageOutcome(input: { workspaceId: string; runId: string; prospectId: string; entry: Pick<FrontierEntry, "url" | "via" | "from">; result: SafeFetchResult; state: CrawlState; fetchedAt: string }): PageOutcome {
+  const { result, state, entry } = input;
+  const finalNormalized = result.finalUrl ? normalizeAuditUrl(result.finalUrl) : null;
+  const requestedNormalized = normalizeAuditUrl(entry.url);
+
+  if (result.ok && finalNormalized && finalNormalized.key !== requestedNormalized?.key && state.finalKeys.includes(finalNormalized.key)) {
+    state.duplicateRedirects += 1;
+    return { page: null, evidence: null, duplicateOf: finalNormalized.url };
+  }
+  if (finalNormalized && !state.finalKeys.includes(finalNormalized.key)) state.finalKeys.push(finalNormalized.key);
+
+  const path = finalNormalized?.path ?? requestedNormalized?.path ?? null;
+  const html = result.ok && result.isHtml && result.body !== null && result.status !== null && result.status >= 200 && result.status < 300;
+  const evidence = html && state.siteDomain ? extractPageEvidence(result.body as string, result.finalUrl as string, state.siteDomain) : null;
+
+  const page: AuditPageInsert = {
+    workspace_id: input.workspaceId,
+    audit_run_id: input.runId,
+    prospect_id: input.prospectId,
+    requested_url: entry.url,
+    final_url: result.finalUrl,
+    path,
+    discovered_via: entry.via,
+    discovered_from: entry.from,
+    page_role: entry.via === "homepage" ? "homepage" : classifyPageRole(path ?? "/"),
+    fetch_ok: result.ok,
+    fetch_error: result.reason,
+    http_status: result.status,
+    content_type: result.contentType,
+    redirect_count: result.redirectChain.length,
+    response_ms: result.durationMs,
+    response_bytes: result.bytes,
+    title: evidence?.title ?? null,
+    meta_description: evidence?.metaDescription ?? null,
+    h1_count: evidence?.h1Count ?? 0,
+    h1_text: evidence?.h1Text ?? [],
+    h2_count: evidence?.h2Count ?? 0,
+    canonical_url: evidence?.canonicalUrl ?? null,
+    meta_robots: evidence?.metaRobots ?? null,
+    noindex: evidence?.noindex ?? false,
+    nofollow: evidence?.nofollow ?? false,
+    lang: evidence?.lang ?? null,
+    has_viewport: evidence?.hasViewport ?? false,
+    word_count: evidence?.wordCount ?? 0,
+    internal_link_count: evidence?.internalLinkCount ?? 0,
+    external_link_count: evidence?.externalLinkCount ?? 0,
+    tel_link_count: evidence?.telLinkCount ?? 0,
+    mailto_link_count: evidence?.mailtoLinkCount ?? 0,
+    form_count: evidence?.formCount ?? 0,
+    cta_count: evidence?.ctaCount ?? 0,
+    json_ld_count: evidence?.jsonLdCount ?? 0,
+    schema_types: evidence?.schemaTypes ?? [],
+    has_structured_data: evidence?.hasStructuredData ?? false,
+    evidence_json: {
+      redirectChain: result.redirectChain,
+      externalHosts: evidence?.externalHosts ?? [],
+      ctaSamples: evidence?.ctaSamples ?? [],
+      jsonLdParseErrors: evidence?.jsonLdParseErrors ?? 0,
+      hasLocalBusinessSchema: evidence?.hasLocalBusinessSchema ?? false,
+      canonicalMatchesFinal: evidence?.canonicalUrl && result.finalUrl ? normalizeAuditUrl(evidence.canonicalUrl)?.key === finalNormalized?.key : null,
+    },
+    fetched_at: input.fetchedAt,
+  };
+  return { page, evidence, duplicateOf: null };
+}
+
+export type SitemapDiscovery = { robotsTxtReachable: boolean; robotsDisallowAll: boolean; sitemapReachable: boolean; sitemapUrlsDiscovered: number; sitemapUrlsSameSite: number; urls: string[] };
+
+/** robots.txt then sitemap(s), bounded by MAX_AUX_REQUESTS. Never counts toward the page cap. */
+export async function discoverSitemaps(fetcher: SafeFetcher, origin: string, state: CrawlState): Promise<SitemapDiscovery> {
+  const discovery: SitemapDiscovery = { robotsTxtReachable: false, robotsDisallowAll: false, sitemapReachable: false, sitemapUrlsDiscovered: 0, sitemapUrlsSameSite: 0, urls: [] };
+  const siteDomain = state.siteDomain;
+  if (!siteDomain) return discovery;
+  const fetchAux = async (url: string): Promise<SafeFetchResult | null> => {
+    if (state.auxRequests >= MAX_AUX_REQUESTS) return null;
+    state.auxRequests += 1;
+    return fetcher.fetch(url, { sameSiteDomain: siteDomain, readContentTypes: READ_TEXT_TYPES });
+  };
+
+  let sitemapCandidates: string[] = [];
+  const robots = await fetchAux(`${origin}/robots.txt`);
+  if (robots?.ok && robots.status === 200 && robots.body !== null) {
+    discovery.robotsTxtReachable = true;
+    const parsed = parseRobotsTxt(robots.body, origin);
+    discovery.robotsDisallowAll = parsed.disallowAll;
+    sitemapCandidates = parsed.sitemaps.filter((url) => isSameSite(url, siteDomain)).slice(0, MAX_SITEMAP_FILES);
+  }
+  if (sitemapCandidates.length === 0) sitemapCandidates = [`${origin}/sitemap.xml`];
+
+  const collected = new Set<string>();
+  const queue = [...sitemapCandidates];
+  let files = 0;
+  while (queue.length > 0 && files < MAX_SITEMAP_FILES) {
+    const url = queue.shift() as string;
+    files += 1;
+    const result = await fetchAux(url);
+    if (!result?.ok || result.status !== 200 || result.body === null) continue;
+    const parsed = parseSitemapXml(result.body, url);
+    if (parsed.kind === "unknown") continue;
+    discovery.sitemapReachable = true;
+    if (parsed.kind === "index") {
+      for (const child of parsed.urls.filter((candidate) => isSameSite(candidate, siteDomain))) if (queue.length + files < MAX_SITEMAP_FILES + 1) queue.push(child);
+      continue;
+    }
+    for (const location of parsed.urls) collected.add(location);
+  }
+  discovery.sitemapUrlsDiscovered = collected.size;
+  discovery.urls = [...collected].filter((url) => isSameSite(url, siteDomain));
+  discovery.sitemapUrlsSameSite = discovery.urls.length;
+  return discovery;
+}
+
+/** Site-level facts from the persisted pages plus crawl state. */
+export function summariseSite(state: CrawlState, pages: Pick<WebsiteAuditPage, "fetch_ok" | "http_status" | "content_type" | "page_role" | "schema_types" | "discovered_from" | "evidence_json">[]): SiteSummary {
+  const html = pages.filter((page) => page.fetch_ok && page.http_status !== null && page.http_status >= 200 && page.http_status < 300 && /^(?:text\/html|application\/xhtml\+xml)/i.test(page.content_type ?? ""));
+  const partial = state.summary;
+  const homepageFinalUrl = partial.homepageFinalUrl ?? null;
+  const schemaTypes = new Set<string>();
+  for (const page of html) for (const type of page.schema_types) schemaTypes.add(type);
+  return {
+    homepageUrl: partial.homepageUrl ?? "",
+    homepageFinalUrl,
+    homepageHttps: homepageFinalUrl ? homepageFinalUrl.startsWith("https://") : false,
+    homepageStatus: partial.homepageStatus ?? null,
+    homepageRedirectChain: partial.homepageRedirectChain ?? [],
+    robotsTxtReachable: partial.robotsTxtReachable ?? false,
+    robotsDisallowAll: partial.robotsDisallowAll ?? false,
+    sitemapReachable: partial.sitemapReachable ?? false,
+    sitemapUrlsDiscovered: partial.sitemapUrlsDiscovered ?? 0,
+    sitemapUrlsSameSite: partial.sitemapUrlsSameSite ?? 0,
+    pagesCrawled: html.length,
+    pagesFailed: pages.filter((page) => !page.fetch_ok || (page.http_status !== null && page.http_status >= 400)).length,
+    servicePagesFound: html.filter((page) => page.page_role === "service").length,
+    locationPagesFound: html.filter((page) => page.page_role === "location").length,
+    contactPageFound: html.some((page) => page.page_role === "contact"),
+    aboutPageFound: html.some((page) => page.page_role === "about"),
+    testimonialsPageFound: html.some((page) => page.page_role === "testimonials"),
+    pagesWithLocalBusinessSchema: html.filter((page) => page.evidence_json?.hasLocalBusinessSchema === true).length,
+    schemaTypesSeen: [...schemaTypes].sort(),
+    brokenInternalLinks: pages.filter((page) => page.fetch_ok && (page.http_status === 404 || page.http_status === 410) && page.discovered_from).length,
+  };
+}
+
+export function siteOrigin(url: string): string | null {
+  const normalized = normalizeAuditUrl(url);
+  if (!normalized) return null;
+  return new URL(normalized.url).origin;
+}
+
+export function siteDomainOf(url: string | null): string | null {
+  return url ? normalizeDomain(url) : null;
+}

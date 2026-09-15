@@ -19,7 +19,18 @@ npm run lint
 npm run build
 ```
 
-Apply the migrations in `supabase/migrations/` in order (`001` through `005`) and then `supabase/seed.sql` through the Supabase SQL editor or Supabase CLI. Migrations are forward-only; rollback should be performed through a reviewed, environment-specific reverse migration.
+Apply the migrations in `supabase/migrations/` in order (`001` through `006`) and then `supabase/seed.sql` through the Supabase SQL editor or Supabase CLI. Migrations are forward-only; rollback should be performed through a reviewed, environment-specific reverse migration.
+
+## Website audits (prospect → bounded crawl → evidence → findings)
+
+Audits are deterministic and run in the background job worker; no LLM is involved in fetching or parsing (`ai/rules/no-llm-in-crawler.md`, enforced by `node ai/scripts/check-llm-imports.mjs --scan`).
+
+1. On a prospect page with a `verified_website`, press **Run website audit**. `requestWebsiteAudit()` creates a `website_audit_runs` row and enqueues an `audit.run` job; a partial unique index prevents a second queued/running audit for the same prospect.
+2. The worker fetches the homepage through the SSRF-safe fetcher (`src/audit/safe-fetch.ts`), reads `robots.txt` and up to three sitemap files, builds a prioritised frontier (services, service areas, contact, about, testimonials first; admin, auth, cart, search, tags, pagination, binaries and third-party hosts ignored; query strings and fragments dropped; URLs deduplicated after normalisation), then crawls up to `AUDIT_MAX_PAGES` same-site pages. Each page row is written as it is fetched and the crawl state is persisted, so the job yields at its deadline and resumes.
+3. Every successful HTML page yields evidence in `website_audit_pages`: title, meta description, H1 count/text, H2 count, canonical, meta robots (noindex/nofollow), lang, viewport, word count, internal/external/tel/mailto link counts, forms, CTA count, JSON-LD count, schema types, structured-data presence, response time and bytes. No HTML is stored.
+4. Finalisation computes the site summary (`site_summary_json`: HTTPS, redirect chain, robots/sitemap reachability, sitemap URLs, pages by role, LocalBusiness schema) and `website_audit_findings` from explicit rules (`audit-rules/v1`: `missing_title`, `missing_meta_description`, `missing_h1`, `multiple_h1`, `missing_canonical`, `page_noindex`, `missing_viewport`, `no_structured_data`, `broken_internal_link`, `no_localbusiness_schema`, `no_contact_page_detected`, `no_service_pages_detected`, `homepage_not_https`, `robots_txt_missing`, `sitemap_missing`). Findings carry severity, scope, evidence and rule version; there is no score or interpretation yet.
+
+Safety: scheme, credential, port, hostname and IP blocklists; DNS resolved and validated before every request with the connection pinned to the validated address (undici `connect.lookup`); redirects re-validated per hop and capped; timeouts, streamed byte caps and HTML-only parsing; same registrable domain only. Failures on one page never fail the audit; a homepage that cannot be fetched fails the run (transient network errors retry up to the job's attempt limit).
 
 ## AI engineering library
 

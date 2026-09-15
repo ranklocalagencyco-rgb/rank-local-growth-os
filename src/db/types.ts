@@ -173,6 +173,96 @@ export type LocalRankObservation = {
 	created_at: string;
 };
 
+export type WebsiteAuditStatus = "queued" | "running" | "completed" | "failed";
+export type AuditPageRole = "homepage" | "service" | "location" | "about" | "contact" | "testimonials" | "other";
+export type AuditDiscoveredVia = "homepage" | "sitemap" | "link";
+export type AuditFindingSeverity = "info" | "low" | "medium" | "high";
+
+/** One bounded crawl of a prospect's verified website. Evidence, not interpretation. */
+export type WebsiteAuditRun = {
+	id: string;
+	workspace_id: string;
+	prospect_id: string;
+	job_id: string | null;
+	requested_by: string | null;
+	status: WebsiteAuditStatus;
+	website_url: string;
+	canonical_domain: string;
+	crawler_version: string;
+	rules_version: string;
+	started_at: string | null;
+	completed_at: string | null;
+	failed_at: string | null;
+	pages_attempted: number;
+	pages_succeeded: number;
+	pages_failed: number;
+	error_summary: string | null;
+	site_summary_json: Record<string, unknown>;
+	crawl_state_json: Record<string, unknown>;
+	retention_class: string;
+	created_at: string;
+	updated_at: string;
+};
+
+/** Parsed deterministic evidence for one fetched URL. Never stores HTML. */
+export type WebsiteAuditPage = {
+	id: string;
+	workspace_id: string;
+	audit_run_id: string;
+	prospect_id: string;
+	requested_url: string;
+	final_url: string | null;
+	path: string | null;
+	discovered_via: AuditDiscoveredVia;
+	discovered_from: string | null;
+	page_role: AuditPageRole;
+	fetch_ok: boolean;
+	fetch_error: string | null;
+	http_status: number | null;
+	content_type: string | null;
+	redirect_count: number;
+	response_ms: number | null;
+	response_bytes: number | null;
+	title: string | null;
+	meta_description: string | null;
+	h1_count: number;
+	h1_text: string[];
+	h2_count: number;
+	canonical_url: string | null;
+	meta_robots: string | null;
+	noindex: boolean;
+	nofollow: boolean;
+	lang: string | null;
+	has_viewport: boolean;
+	word_count: number;
+	internal_link_count: number;
+	external_link_count: number;
+	tel_link_count: number;
+	mailto_link_count: number;
+	form_count: number;
+	cta_count: number;
+	json_ld_count: number;
+	schema_types: string[];
+	has_structured_data: boolean;
+	evidence_json: Record<string, unknown>;
+	fetched_at: string;
+	created_at: string;
+};
+
+export type WebsiteAuditFinding = {
+	id: string;
+	workspace_id: string;
+	audit_run_id: string;
+	prospect_id: string;
+	page_id: string | null;
+	scope: "site" | "page";
+	code: string;
+	severity: AuditFindingSeverity;
+	evidence_json: Record<string, unknown>;
+	rule_version: string;
+	created_at: string;
+};
+
 export type JobRow = {
 	id: string;
 	workspace_id: string;
@@ -250,6 +340,9 @@ export type Database = {
 			prospect_website_verifications: TableDefinition<ProspectWebsiteVerification>;
 			discovery_candidates: TableDefinition<DiscoveryCandidate>;
 			local_rank_observations: TableDefinition<LocalRankObservation>;
+			website_audit_runs: TableDefinition<WebsiteAuditRun>;
+			website_audit_pages: TableDefinition<WebsiteAuditPage>;
+			website_audit_findings: TableDefinition<WebsiteAuditFinding>;
 			jobs: TableDefinition<JobRow>;
 			domain_events: TableDefinition<DomainEventRow>;
 			activity_events: TableDefinition<ActivityEvent>;

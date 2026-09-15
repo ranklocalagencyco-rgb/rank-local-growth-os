@@ -5,6 +5,15 @@ import { evaluateWebsiteSignals, officialUrlToProbe, signalsFromWebsiteHint, typ
 
 const at = "2026-09-14T10:00:00.000Z";
 
+describe("blocked address guard", () => {
+  it("blocks IPv4-mapped IPv6 addresses in both dotted and hex serialisations", () => {
+    expect(isBlockedIpAddress("::ffff:10.0.0.1")).toBe(true);
+    expect(isBlockedIpAddress("::ffff:a00:1")).toBe(true);
+    expect(isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
+    expect(isBlockedIpAddress("::ffff:5db8:d822")).toBe(false); // 93.184.216.34
+  });
+});
+
 describe("website verification states", () => {
   it("verifies a website when the provider URL is official-looking and answers over HTTP", () => {
     const result = evaluateWebsiteSignals([

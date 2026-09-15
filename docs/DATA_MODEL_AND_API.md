@@ -243,6 +243,28 @@ observed_at
 unique (campaign_run_id, provider, provider_ref, search_category, search_location)
 ```
 
+
+## website_audit_runs / website_audit_pages / website_audit_findings (implemented, migration 006)
+
+The first audit slice implements the crawl/evidence layer with these three tables (the logical `crawl_runs` / `evidence_items` / `audits` split above remains the target for scoring and AI layers):
+
+```text
+website_audit_runs      id, workspace_id, prospect_id, job_id, requested_by, status (queued|running|completed|failed),
+                        website_url, canonical_domain, crawler_version, rules_version, started_at, completed_at, failed_at,
+                        pages_attempted, pages_succeeded, pages_failed, error_summary, site_summary_json, crawl_state_json,
+                        retention_class (audit_evidence)
+                        unique partial index on (prospect_id) where status in ('queued','running')
+website_audit_pages     one row per fetched URL: requested_url, final_url, path, discovered_via (homepage|sitemap|link),
+                        discovered_from, page_role, fetch_ok, fetch_error, http_status, content_type, redirect_count,
+                        response_ms, response_bytes, title, meta_description, h1_count, h1_text[], h2_count, canonical_url,
+                        meta_robots, noindex, nofollow, lang, has_viewport, word_count, internal/external/tel/mailto link counts,
+                        form_count, cta_count, json_ld_count, schema_types[], has_structured_data, evidence_json, fetched_at
+                        unique (audit_run_id, requested_url); no HTML stored
+website_audit_findings  scope (site|page), page_id, code, severity (info|low|medium|high), evidence_json, rule_version
+```
+
+Events: `audit.requested`, `audit.completed`, `audit.failed`. Job type: `audit.run` with idempotency key `audit.run:<runId>`.
+
 ---
 
 # 6. Contacts

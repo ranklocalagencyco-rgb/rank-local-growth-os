@@ -31,6 +31,11 @@ const runtimeConfigSchema = z.object({
   discoveryTaskTimeoutMinutes: z.coerce.number().int().positive().max(24 * 60).default(120),
   /** two_stage: cheap search + per-candidate enrichment (default). inline: contact fields fetched during search, no enrichment calls. */
   discoveryEnrichmentMode: z.enum(["two_stage", "inline"]).default("two_stage"),
+  /** Website audit crawl limits. A single audit never crawls a whole site. */
+  auditMaxPages: z.coerce.number().int().min(1).max(50).default(15),
+  auditRequestTimeoutMs: z.coerce.number().int().min(1000).max(60_000).default(10_000),
+  auditMaxResponseBytes: z.coerce.number().int().min(10_000).max(10_000_000).default(2_000_000),
+  auditMaxRedirects: z.coerce.number().int().min(0).max(10).default(5),
 });
 
 function optionalEnvironmentValue(value: string | undefined): string | undefined {
@@ -61,6 +66,10 @@ export function parseRuntimeConfig(environment: NodeJS.ProcessEnv = process.env)
     discoveryMaxRequestsPerRun: optionalEnvironmentValue(environment.DISCOVERY_MAX_REQUESTS_PER_RUN),
     discoveryTaskTimeoutMinutes: optionalEnvironmentValue(environment.DISCOVERY_TASK_TIMEOUT_MINUTES),
     discoveryEnrichmentMode: optionalEnvironmentValue(environment.DISCOVERY_ENRICHMENT_MODE),
+    auditMaxPages: optionalEnvironmentValue(environment.AUDIT_MAX_PAGES),
+    auditRequestTimeoutMs: optionalEnvironmentValue(environment.AUDIT_REQUEST_TIMEOUT_MS),
+    auditMaxResponseBytes: optionalEnvironmentValue(environment.AUDIT_MAX_RESPONSE_BYTES),
+    auditMaxRedirects: optionalEnvironmentValue(environment.AUDIT_MAX_REDIRECTS),
   });
 }
 

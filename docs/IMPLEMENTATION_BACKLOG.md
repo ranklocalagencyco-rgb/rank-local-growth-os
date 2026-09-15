@@ -114,20 +114,31 @@ getReferenceDetails()
 
 ## RL-050 SSRF-safe URL fetcher
 Critical security ticket.
+- implemented in `src/audit/safe-fetch.ts`: scheme/credential/port/host/IP checks, DNS validation with connection pinning, per-hop redirect revalidation, timeout, byte cap, HTML-only parsing (see `ai/skills/ssrf-safe-http`).
 
 ## RL-051 Crawl scheduler
+- implemented: bounded frontier (homepage → sitemap → links), role prioritisation, persisted crawl state, `audit.run` job.
 ## RL-052 HTML metadata parser
+- implemented in `src/audit/extract.ts` (cheerio).
 ## RL-053 Heading/content parser
+- implemented (H1/H2, word count).
 ## RL-054 robots/sitemap parser
+- implemented in `src/audit/sitemap.ts`.
 ## RL-055 internal-link graph
+- implemented as per-page internal/external link counts and frontier discovery; full graph deferred.
 ## RL-056 structured-data parser
+- implemented (JSON-LD @graph/@type, microdata itemtype, RDFa typeof).
 ## RL-057 CTA/contact detector
+- implemented (tel/mailto/form/CTA counts, contact page role).
 ## RL-058 PageSpeed adapter
 ## RL-059 optional CrUX adapter
 ## RL-060 rendered screenshot worker
 ## RL-061 evidence-item writer
+- implemented as `website_audit_pages` + `site_summary_json` (migration 006).
 ## RL-062 finding rules engine
+- implemented in `src/audit/findings.ts` (`audit-rules/v1`).
 ## RL-063 audit summary UI
+- minimal panel on the prospect page (status, pages, findings).
 ## RL-064 evidence inspector
 ## RL-065 audit retry/failure UI
 

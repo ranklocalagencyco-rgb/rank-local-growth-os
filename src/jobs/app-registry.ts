@@ -1,4 +1,7 @@
+import { registerAuditJobs } from "@/audit/jobs";
+import { SafeFetcher } from "@/audit/safe-fetch";
 import { getRuntimeConfig } from "@/config/env";
+import { createSupabaseAuditStore } from "@/data/audit-store";
 import { createSupabaseDiscoveryStore } from "@/data/discovery-store";
 import { getSupabaseAdminClient } from "@/db/client";
 import { registerDiscoveryJobs } from "@/discovery/jobs";
@@ -11,6 +14,11 @@ export function createAppJobRegistry(client: DbClient): JobRegistry {
   const config = getRuntimeConfig();
   const registry = new JobRegistry();
   registerDiscoveryJobs(registry, { store: createSupabaseDiscoveryStore(client), getProvider: getDiscoveryProvider, config });
+  registerAuditJobs(registry, {
+    store: createSupabaseAuditStore(client),
+    createFetcher: () => new SafeFetcher({ timeoutMs: config.auditRequestTimeoutMs, maxRedirects: config.auditMaxRedirects, maxBytes: config.auditMaxResponseBytes }),
+    config,
+  });
   return registry;
 }
 
