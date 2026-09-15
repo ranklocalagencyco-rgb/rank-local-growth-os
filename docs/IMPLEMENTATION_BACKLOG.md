@@ -77,11 +77,20 @@ searchCandidates()
 getReferenceDetails()
 ```
 
-## RL-031 Google Places discovery adapter
+## RL-031 Google Places discovery adapter (optional fallback)
 - Text Search/field-mask support;
 - provider attribution/policy notes;
 - retain place ID correctly;
 - candidate TTL/purge.
+
+## RL-031a DataForSEO discovery adapter (primary)
+- Google Maps SERP endpoints, one task per search unit, contact fields included;
+- `DATAFORSEO_MODE` standard (queued task_post + task_get, default) / priority / live, same normalised output;
+- ranking position, rating and coordinates captured separately from identity; `local_rank_observations` per run;
+- request cap per run, candidate cap, provider cost and mode recorded on `campaign_runs`;
+- My Business Info lookup only for purge re-fetch;
+- no website crawling through the provider;
+- provider selected by `DISCOVERY_PROVIDER` (default `dataforseo`); Google key optional.
 
 ## RL-032 Territory search planner
 - towns/postcodes;

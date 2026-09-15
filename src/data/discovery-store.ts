@@ -1,6 +1,6 @@
-import type { Campaign, CampaignRun, DiscoveryCandidate, ProspectFieldEvidence } from "@/db/types";
+import type { Campaign, CampaignRun, DiscoveryCandidate, LocalRankObservation, ProspectFieldEvidence } from "@/db/types";
 import type { ExistingProspectMatch, ResolutionLookup } from "@/discovery/resolver";
-import type { AttachProspectInput, CampaignRunPatch, CandidateInsert, CandidatePatch, CreateProspectInput, DiscoveryStore } from "@/discovery/store";
+import type { AttachProspectInput, CampaignRunPatch, CandidateInsert, CandidatePatch, CreateProspectInput, DiscoveryStore, RankObservationInsert } from "@/discovery/store";
 import type { WebsiteVerification } from "@/discovery/website/verify";
 import { deterministicUuid, valueHash } from "@/domain/deterministic-id";
 import { normalizeLocality } from "@/domain/identifiers";
@@ -25,9 +25,37 @@ function runPatchToRow(patch: CampaignRunPatch): Partial<CampaignRun> {
   if (patch.searchUnitsTotal !== undefined) row.search_units_total = patch.searchUnitsTotal;
   if (patch.searchUnitsCompleted !== undefined) row.search_units_completed = patch.searchUnitsCompleted;
   if (patch.providerRequests !== undefined) row.provider_requests = patch.providerRequests;
+  if (patch.providerCostUsd !== undefined) row.provider_cost_usd = Math.round(patch.providerCostUsd * 1_000_000) / 1_000_000;
   if (patch.provider !== undefined) row.provider = patch.provider;
+  if (patch.providerMode !== undefined) row.provider_mode = patch.providerMode;
   if (patch.errorSummary !== undefined) row.error_summary = patch.errorSummary;
   return row;
+}
+
+/** Deterministic id so a retried page never records the same observation twice. */
+export function rankObservationId(row: Pick<RankObservationInsert, "campaignRunId" | "provider" | "providerRef" | "category" | "location">): string {
+  return deterministicUuid("rank_observation", `${row.campaignRunId}:${row.provider}:${row.providerRef}:${row.category}:${row.location}`);
+}
+
+function rankObservationRow(row: RankObservationInsert): Partial<LocalRankObservation> {
+  return {
+    id: rankObservationId(row),
+    workspace_id: row.workspaceId,
+    campaign_id: row.campaignId,
+    campaign_run_id: row.campaignRunId,
+    candidate_id: row.candidateId,
+    prospect_id: row.prospectId,
+    provider: row.provider,
+    provider_ref: row.providerRef,
+    search_category: row.category,
+    search_location: row.location,
+    country_code: row.countryCode,
+    rank_position: row.position,
+    rank_absolute: row.absolutePosition,
+    rating: row.rating,
+    review_count: row.reviewCount,
+    observed_at: row.observedAt,
+  };
 }
 
 function candidatePatchToRow(patch: CandidatePatch): Partial<DiscoveryCandidate> {
@@ -92,6 +120,12 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
     return existing.data.id;
   }
 
+  /** Points every observation recorded for a candidate at the prospect it resolved to. */
+  async function linkRankObservations(candidateId: string, prospectId: string): Promise<void> {
+    const { error } = await client.from("local_rank_observations").update({ prospect_id: prospectId }).eq("candidate_id", candidateId).is("prospect_id", null);
+    if (error) throw new Error(`Unable to link ranking observations: ${error.message}`);
+  }
+
   async function recordVerification(input: { workspaceId: string; prospectId: string; candidateId: string; verification: WebsiteVerification; now: string }): Promise<void> {
     const { verification } = input;
     const retire = await client.from("prospect_website_verifications").update({ is_current: false }).eq("prospect_id", input.prospectId).eq("is_current", true);
@@ -142,12 +176,12 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
     },
 
     async findKnownCandidates(campaignId, keys) {
-      const known = new Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status">>();
+      const known = new Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status" | "resolved_prospect_id">>();
       if (keys.length === 0) return known;
       const refs = keys.map((key) => key.slice(key.indexOf(":") + 1));
-      const { data, error } = await client.from("discovery_candidates").select("id,provider,provider_ref,resolution_status").eq("campaign_id", campaignId).in("provider_ref", refs);
+      const { data, error } = await client.from("discovery_candidates").select("id,provider,provider_ref,resolution_status,resolved_prospect_id").eq("campaign_id", campaignId).in("provider_ref", refs);
       if (error) throw new Error(`Unable to load known candidates: ${error.message}`);
-      for (const row of data ?? []) known.set(`${row.provider}:${row.provider_ref}`, { id: row.id, resolution_status: row.resolution_status });
+      for (const row of data ?? []) known.set(`${row.provider}:${row.provider_ref}`, { id: row.id, resolution_status: row.resolution_status, resolved_prospect_id: row.resolved_prospect_id });
       return known;
     },
 
@@ -198,6 +232,12 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
     async updateCandidate(candidateId, patch) {
       const { error } = await client.from("discovery_candidates").update(candidatePatchToRow(patch)).eq("id", candidateId);
       if (error) throw new Error(`Unable to update candidate: ${error.message}`);
+    },
+
+    async recordRankObservations(rows) {
+      if (rows.length === 0) return;
+      const { error } = await client.from("local_rank_observations").upsert(rows.map(rankObservationRow), { onConflict: "id", ignoreDuplicates: true });
+      if (error) throw new Error(`Unable to record ranking observations: ${error.message}`);
     },
 
     async findMatches(lookup: ResolutionLookup): Promise<ExistingProspectMatch[]> {
@@ -277,6 +317,7 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
       }
 
       await recordVerification({ workspaceId: record.workspaceId, prospectId, candidateId: candidate.id, verification, now });
+      await linkRankObservations(candidate.id, prospectId);
 
       await this.recordActivity({
         workspaceId: record.workspaceId,
@@ -301,6 +342,7 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
         const upgrade = prospect.data.website_state === "unknown" || (verification.state === "verified_website" && prospect.data.website_state !== "verified_website");
         if (upgrade) await recordVerification({ workspaceId: candidate.workspace_id, prospectId, candidateId: candidate.id, verification, now });
       }
+      await linkRankObservations(candidate.id, prospectId);
 
       await this.recordActivity({
         workspaceId: candidate.workspace_id,

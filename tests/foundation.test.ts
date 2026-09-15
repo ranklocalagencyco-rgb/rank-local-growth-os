@@ -15,6 +15,14 @@ const workspaceId = "11111111-1111-4111-8111-111111111111";
     expect(config.supabaseUrl).toBeUndefined();
   });
 
+  it("defaults discovery to DataForSEO in standard mode with bounded cost controls and no Google credentials", () => {
+    const config = parseRuntimeConfig({ NODE_ENV: "test" });
+    expect(config).toMatchObject({ discoveryProvider: "dataforseo", dataForSeoMode: "standard", dataForSeoMapsDepth: 100, discoveryMaxRequestsPerRun: 50, discoveryTaskTimeoutMinutes: 120 });
+    expect(parseRuntimeConfig({ NODE_ENV: "test", DATAFORSEO_MODE: "live", DISCOVERY_MAX_REQUESTS_PER_RUN: "5" })).toMatchObject({ dataForSeoMode: "live", discoveryMaxRequestsPerRun: 5 });
+    expect(() => parseRuntimeConfig({ NODE_ENV: "test", DATAFORSEO_MODE: "instant" })).toThrow();
+    expect(() => parseRuntimeConfig({ NODE_ENV: "test", DISCOVERY_PROVIDER: "hybrid" })).toThrow();
+  });
+
   it("rejects access to another workspace", () => {
     expect(() => requireWorkspaceId("99999999-9999-4999-8999-999999999999", { workspaceId, userId: "user", role: "owner" })).toThrow("Workspace access denied");
   });

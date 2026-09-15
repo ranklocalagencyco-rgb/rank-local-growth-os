@@ -6,7 +6,7 @@
 //   Stage 2 (getReferenceDetails)  — website + contact fields for one candidate that survived
 //                                    dedupe and pre-screening and actually needs verification.
 
-export type DiscoveryProviderName = "google_places";
+export type DiscoveryProviderName = "dataforseo" | "google_places";
 
 export type WebsiteHintState = "present" | "absent" | "unknown";
 
@@ -19,7 +19,31 @@ export type DiscoverySearchQuery = {
   countryCode: string;
   languageCode?: string;
   pageToken?: string | null;
+  /** Optional upper bound on results for this request; providers clamp it to their own limits. */
   pageSize?: number;
+  /**
+   * Reference of a deferred search the provider previously returned as `pending`. When set, the
+   * provider retrieves that task's result instead of starting a new (billable) search.
+   */
+  pendingTaskRef?: string | null;
+};
+
+/** Position of a listing in the provider's local search results, kept apart from business identity. */
+export type DiscoveryRankHint = {
+  /** Position among organic local listings (ads excluded). 1-based. */
+  position: number;
+  /** Position among every element of the result set, ads included. */
+  absolutePosition: number | null;
+};
+
+export type DiscoveryRatingHint = {
+  value: number;
+  reviewCount: number | null;
+};
+
+export type DiscoveryCoordinates = {
+  latitude: number;
+  longitude: number;
 };
 
 /**
@@ -33,7 +57,7 @@ export type DiscoverySearchQuery = {
  */
 export type DiscoveryCandidateInput = {
   provider: DiscoveryProviderName;
-  /** Durable provider reference (e.g. Google place ID). */
+  /** Durable provider reference (a Google place ID for both current providers). */
   providerRef: string;
   displayName: string | null;
   formattedAddress: string | null;
@@ -52,12 +76,28 @@ export type DiscoveryCandidateInput = {
   observedAt: string;
   /** When the Stage 2 contact fields were fetched; null until enrichment has run. */
   enrichedAt: string | null;
+  /** Local search ranking context, when the provider returns ranked results (DataForSEO Maps). Absent for Google Places. */
+  rank?: DiscoveryRankHint | null;
+  rating?: DiscoveryRatingHint | null;
+  coordinates?: DiscoveryCoordinates | null;
+};
+
+/** A search the provider accepted but has not finished; the caller must call again later with `pendingTaskRef`. */
+export type DiscoveryPendingTask = {
+  taskRef: string;
+  /** Suggested wait before retrieving the result. */
+  retryAfterSeconds: number;
 };
 
 export type DiscoverySearchResult = {
   candidates: DiscoveryCandidateInput[];
   nextPageToken: string | null;
+  /** Billable provider requests made by this call. Free polling/retrieval calls are not counted. */
   requestCount: number;
+  /** Provider-reported charge for this call in USD, when the provider returns one. Accumulated on the campaign run. */
+  costUsd?: number | null;
+  /** Set when the provider queued the search instead of answering it; `candidates` is then empty. */
+  pending?: DiscoveryPendingTask | null;
 };
 
 export type DiscoveryProviderRetentionPolicy = {
@@ -72,9 +112,16 @@ export type DiscoveryProviderRetentionPolicy = {
 export interface DiscoveryProvider {
   readonly name: DiscoveryProviderName;
   readonly retention: DiscoveryProviderRetentionPolicy;
+  /** Provider execution mode (e.g. DataForSEO standard/priority/live), recorded on each run when present. */
+  readonly mode?: string;
   /**
-   * Stage 1 — broad discovery. One request per page. Must request only the fields needed to
-   * identify, display and deduplicate a business; never website, phone, rating or review fields.
+   * Stage 1 — broad discovery. One request per page. Must never pay extra for contact fields:
+   * a provider that prices by field (Google Places) requests identity fields only, while a provider
+   * whose search results already include website and phone at no extra cost (DataForSEO) returns
+   * candidates stamped as enriched so Stage 2 is skipped entirely.
+   *
+   * A provider may answer with `pending` instead of candidates when it queues the search; the caller
+   * persists `pending.taskRef`, waits, and calls again with `pendingTaskRef` set to retrieve the result.
    */
   searchCandidates(query: DiscoverySearchQuery): Promise<DiscoverySearchResult>;
   /**

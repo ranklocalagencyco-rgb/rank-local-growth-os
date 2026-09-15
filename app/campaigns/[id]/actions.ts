@@ -31,7 +31,7 @@ export async function runDiscoveryAction(formData: FormData): Promise<void> {
     await requestDiscoveryRun(client, { workspaceId: context.workspaceId, campaignId, userId: context.userId });
   } catch (error) {
     if (error instanceof DiscoveryRequestError) back(campaignId, { error: error.message });
-    back(campaignId, { error: "Unable to queue the discovery run. Check the server logs and that migration 004 has been applied." });
+    back(campaignId, { error: "Unable to queue the discovery run. Check the server logs and that migrations 004 and 005 have been applied." });
   }
   back(campaignId, { notice: "Discovery run queued." });
 }

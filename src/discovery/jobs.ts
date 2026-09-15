@@ -23,9 +23,17 @@ export type DiscoveryJobDependencies = {
   store: DiscoveryStore;
   getProvider: () => DiscoveryProvider;
   probe?: (url: string) => Promise<HttpProbeResult>;
-  config: Pick<RuntimeConfig, "discoveryCandidateTtlHours" | "discoveryMaxPagesPerQuery" | "discoveryDefaultCandidateCap">;
+  config: Pick<RuntimeConfig, "discoveryCandidateTtlHours" | "discoveryMaxPagesPerQuery" | "discoveryDefaultCandidateCap"> & Partial<Pick<RuntimeConfig, "discoveryMaxRequestsPerRun" | "discoveryTaskTimeoutMinutes">>;
   now?: () => Date;
 };
+
+/** Defaults for the optional cost-control settings, mirroring src/config/env.ts. */
+const DEFAULT_MAX_REQUESTS_PER_RUN = 50;
+const DEFAULT_TASK_TIMEOUT_MINUTES = 120;
+
+function positiveSetting(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
 
 export function resolveJobIdempotencyKey(candidateId: string): string {
   return `${CANDIDATE_RESOLVE_JOB}:${candidateId}`;
@@ -70,18 +78,26 @@ export async function runDiscovery(payload: DiscoveryRunPayload, context: Pick<J
     throw new NonRetryableJobError(error instanceof Error ? error.message : "Discovery provider unavailable");
   }
 
-  const settings = campaign.settings_json as { max_pages_per_query?: unknown };
+  const settings = campaign.settings_json as { max_pages_per_query?: unknown; max_requests_per_run?: unknown };
   const maxPages = typeof settings.max_pages_per_query === "number" && settings.max_pages_per_query > 0 ? Math.min(settings.max_pages_per_query, 3) : deps.config.discoveryMaxPagesPerQuery;
   const candidateCap = campaign.daily_candidate_cap ?? deps.config.discoveryDefaultCandidateCap;
+  // Campaign settings may tighten the request cap but never exceed the environment-wide ceiling.
+  const requestCeiling = deps.config.discoveryMaxRequestsPerRun ?? DEFAULT_MAX_REQUESTS_PER_RUN;
+  const maxRequests = Math.min(positiveSetting(settings.max_requests_per_run) ?? requestCeiling, requestCeiling);
+  const taskTimeoutMs = (deps.config.discoveryTaskTimeoutMinutes ?? DEFAULT_TASK_TIMEOUT_MINUTES) * 60 * 1000;
 
   let cursor = parseCursor(run.cursor_json);
   let candidatesSeen = run.candidates_seen;
   let providerRequests = run.provider_requests;
+  let providerCostUsd = Number(run.provider_cost_usd ?? 0);
   let unitsCompleted = run.search_units_completed;
+  let requestCapReached = false;
 
   if (run.status === "queued") {
-    await store.updateCampaignRun(run.id, { status: "running", startedAt: run.started_at ?? now().toISOString(), provider: provider.name, searchUnitsTotal: units.length });
+    await store.updateCampaignRun(run.id, { status: "running", startedAt: run.started_at ?? now().toISOString(), provider: provider.name, providerMode: provider.mode ?? null, searchUnitsTotal: units.length });
   }
+
+  const progress = () => ({ cursor, candidatesSeen, providerRequests, providerCostUsd, searchUnitsCompleted: unitsCompleted });
 
   while (!isCursorFinished(cursor, units.length) && candidatesSeen < candidateCap) {
     if (Date.now() > context.deadline - 3_000) {
@@ -89,19 +105,41 @@ export async function runDiscovery(payload: DiscoveryRunPayload, context: Pick<J
     }
 
     const unit = units[cursor.unitIndex];
+    const pendingTask = cursor.pendingTask ?? null;
+
+    // A queued provider task is already paid for, so retrieving it never counts against the request cap.
+    if (!pendingTask && providerRequests >= maxRequests) {
+      requestCapReached = true;
+      break;
+    }
+    if (pendingTask && now().getTime() - new Date(pendingTask.postedAt).getTime() > taskTimeoutMs) {
+      const message = `Provider task ${pendingTask.taskRef} for ${unit.category} in ${unit.location} did not complete within ${Math.round(taskTimeoutMs / 60_000)} minutes.`;
+      await store.updateCampaignRun(run.id, { status: "failed", finishedAt: now().toISOString(), errorSummary: message, ...progress() });
+      throw new NonRetryableJobError(message);
+    }
+
     let page;
     try {
-      page = await provider.searchCandidates({ category: unit.category, location: unit.location, countryCode: campaign.country_code, pageToken: cursor.pageToken });
+      page = await provider.searchCandidates({ category: unit.category, location: unit.location, countryCode: campaign.country_code, pageToken: cursor.pageToken, pendingTaskRef: pendingTask?.taskRef ?? null });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Discovery provider request failed";
       if (providerFailureIsFatal(error)) {
-        await store.updateCampaignRun(run.id, { status: "failed", finishedAt: now().toISOString(), errorSummary: message, cursor, candidatesSeen, providerRequests, searchUnitsCompleted: unitsCompleted });
+        await store.updateCampaignRun(run.id, { status: "failed", finishedAt: now().toISOString(), errorSummary: message, ...progress() });
         throw new NonRetryableJobError(message);
       }
-      await store.updateCampaignRun(run.id, { errorSummary: `Retrying after provider error: ${message}`, cursor, candidatesSeen, providerRequests, searchUnitsCompleted: unitsCompleted });
+      await store.updateCampaignRun(run.id, { errorSummary: `Retrying after provider error: ${message}`, ...progress() });
       throw error;
     }
     providerRequests += page.requestCount;
+    if (typeof page.costUsd === "number" && page.costUsd > 0) providerCostUsd += page.costUsd;
+
+    if (page.pending) {
+      // Standard/priority queue: the search is posted and charged now; the result is retrieved on a later invocation.
+      cursor = { ...cursor, pendingTask: { taskRef: page.pending.taskRef, postedAt: pendingTask?.postedAt ?? now().toISOString(), polls: pendingTask ? pendingTask.polls + 1 : 0 } };
+      await store.updateCampaignRun(run.id, { ...progress(), errorSummary: null });
+      context.logger.info("discovery.pending", { unit, taskRef: page.pending.taskRef, polls: cursor.pendingTask?.polls ?? 0, retryAfterSeconds: page.pending.retryAfterSeconds, providerRequests, costUsd: page.costUsd ?? null });
+      return { status: "continue", delaySeconds: Math.max(1, Math.floor(page.pending.retryAfterSeconds)) };
+    }
 
     const { unique } = dedupeCandidates(page.candidates);
     const keys = unique.map((candidate) => candidateDedupeKey(candidate));
@@ -132,25 +170,33 @@ export async function runDiscovery(payload: DiscoveryRunPayload, context: Pick<J
       await store.recordDomainEvent({ workspaceId, aggregateType: "discovery_candidate", aggregateId: row.id, eventType: "candidate.discovered", payload: { campaignId: campaign.id, campaignRunId: run.id, provider: row.provider }, idempotencyKey: `candidate.discovered:${row.id}` });
     }
 
+    // Ranking context is recorded for every stored candidate on the page, new or re-seen, so repeat runs
+    // build a time series without re-creating candidates. Providers without ranking (Google Places) add nothing.
+    const storedRows = new Map<string, { id: string; prospectId: string | null }>([...known].map(([key, row]) => [key, { id: row.id, prospectId: row.resolved_prospect_id ?? null }]));
+    for (const row of inserted) storedRows.set(`${row.provider}:${row.provider_ref}`, { id: row.id, prospectId: null });
+    const observations = unique.flatMap((candidate) => {
+      const stored = storedRows.get(candidateDedupeKey(candidate));
+      if (!candidate.rank || !stored) return [];
+      return [{ workspaceId, campaignId: campaign.id, campaignRunId: run.id, candidateId: stored.id, prospectId: stored.prospectId, provider: candidate.provider, providerRef: candidate.providerRef, category: unit.category, location: unit.location, countryCode: campaign.country_code, position: candidate.rank.position, absolutePosition: candidate.rank.absolutePosition, rating: candidate.rating?.value ?? null, reviewCount: candidate.rating?.reviewCount ?? null, observedAt: candidate.observedAt }];
+    });
+    if (observations.length) await store.recordRankObservations(observations);
+
     const advanced = advanceCursor(cursor, page.nextPageToken, maxPages);
     cursor = advanced.cursor;
     if (advanced.unitCompleted) unitsCompleted += 1;
 
-    await store.updateCampaignRun(run.id, { cursor, candidatesSeen, providerRequests, searchUnitsCompleted: unitsCompleted, errorSummary: null });
-    context.logger.info("discovery.page", { unit, inserted: inserted.length, seenAgain: seenAgain.length, candidatesSeen });
+    await store.updateCampaignRun(run.id, { ...progress(), errorSummary: null });
+    context.logger.info("discovery.page", { unit, inserted: inserted.length, seenAgain: seenAgain.length, ranked: observations.length, candidatesSeen, providerRequests: page.requestCount, costUsd: page.costUsd ?? null });
   }
 
-  const capReached = candidatesSeen >= candidateCap && !isCursorFinished(cursor, units.length);
-  await store.updateCampaignRun(run.id, {
-    status: "completed",
-    finishedAt: now().toISOString(),
-    cursor,
-    candidatesSeen,
-    providerRequests,
-    searchUnitsCompleted: unitsCompleted,
-    errorSummary: capReached ? `Stopped at the candidate cap (${candidateCap}) before all search units were exhausted.` : null,
-  });
-  await store.recordActivity({ workspaceId, campaignId: campaign.id, prospectId: null, eventType: "campaign.discovery_completed", summary: `Discovery run found ${candidatesSeen} candidate${candidatesSeen === 1 ? "" : "s"}.`, metadata: { campaignRunId: run.id, providerRequests }, idempotencyKey: `campaign.discovery_completed:${run.id}` });
+  const unfinished = !isCursorFinished(cursor, units.length);
+  const stoppedEarly = requestCapReached && unfinished
+    ? `Stopped at the provider request cap (${maxRequests}) before all search units were exhausted.`
+    : candidatesSeen >= candidateCap && unfinished
+      ? `Stopped at the candidate cap (${candidateCap}) before all search units were exhausted.`
+      : null;
+  await store.updateCampaignRun(run.id, { status: "completed", finishedAt: now().toISOString(), ...progress(), errorSummary: stoppedEarly });
+  await store.recordActivity({ workspaceId, campaignId: campaign.id, prospectId: null, eventType: "campaign.discovery_completed", summary: `Discovery run found ${candidatesSeen} candidate${candidatesSeen === 1 ? "" : "s"}.`, metadata: { campaignRunId: run.id, provider: provider.name, providerMode: provider.mode ?? null, providerRequests, providerCostUsd }, idempotencyKey: `campaign.discovery_completed:${run.id}` });
   return { status: "completed" };
 }
 

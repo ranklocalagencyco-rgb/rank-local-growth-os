@@ -4,7 +4,7 @@ import type { Campaign, CampaignRun, DiscoveryCandidate } from "@/db/types";
 import { CANDIDATE_RESOLVE_JOB, resolveCandidate, runDiscovery, verifyCandidateWebsite } from "@/discovery/jobs";
 import type { DiscoveryCandidateInput, DiscoveryProvider, DiscoverySearchQuery, DiscoverySearchResult } from "@/discovery/provider";
 import { buildResolutionLookup, decideResolution, type ExistingProspectMatch, type ResolutionLookup } from "@/discovery/resolver";
-import type { AttachProspectInput, CandidateInsert, CreateProspectInput, DiscoveryStore } from "@/discovery/store";
+import type { AttachProspectInput, CandidateInsert, CreateProspectInput, DiscoveryStore, RankObservationInsert } from "@/discovery/store";
 import type { HttpProbeResult } from "@/discovery/website/http-probe";
 import type { WebsiteVerification } from "@/discovery/website/verify";
 
@@ -110,11 +110,12 @@ class MemoryStore implements DiscoveryStore {
   events: string[] = [];
   created: CreateProspectInput[] = [];
   attached: AttachProspectInput[] = [];
+  rankObservations: RankObservationInsert[] = [];
   private sequence = 0;
 
   constructor(campaign: Partial<Campaign> = {}) {
     this.campaign = { id: campaignId, workspace_id: workspaceId, name: "Test", status: "draft", country_code: "GB", target_categories: ["roofer"], target_locations: ["Uxbridge"], website_filter: "any", minimum_score: null, entity_policy: "manual_review", daily_candidate_cap: null, daily_send_cap: null, approval_mode: "human", settings_json: {}, created_by: null, created_at: at, updated_at: at, ...campaign };
-    this.run = { id: runId, campaign_id: campaignId, workspace_id: workspaceId, run_type: "discovery", requested_by: null, job_id: null, provider: null, provider_requests: 0, search_units_total: 0, search_units_completed: 0, status: "queued", started_at: null, finished_at: null, cursor_json: {}, candidates_seen: 0, prospects_created: 0, qualified_count: 0, error_summary: null, created_at: at };
+    this.run = { id: runId, campaign_id: campaignId, workspace_id: workspaceId, run_type: "discovery", requested_by: null, job_id: null, provider: null, provider_mode: null, provider_requests: 0, provider_cost_usd: 0, search_units_total: 0, search_units_completed: 0, status: "queued", started_at: null, finished_at: null, cursor_json: {}, candidates_seen: 0, prospects_created: 0, qualified_count: 0, error_summary: null, created_at: at };
   }
 
   seedCandidate(details: DiscoveryCandidateInput, overrides: Partial<DiscoveryCandidate> = {}): DiscoveryCandidate {
@@ -135,11 +136,14 @@ class MemoryStore implements DiscoveryStore {
     if (patch.searchUnitsTotal !== undefined) this.run.search_units_total = patch.searchUnitsTotal;
     if (patch.searchUnitsCompleted !== undefined) this.run.search_units_completed = patch.searchUnitsCompleted;
     if (patch.providerRequests !== undefined) this.run.provider_requests = patch.providerRequests;
+    if (patch.providerCostUsd !== undefined) this.run.provider_cost_usd = patch.providerCostUsd;
+    if (patch.provider !== undefined) this.run.provider = patch.provider;
+    if (patch.providerMode !== undefined) this.run.provider_mode = patch.providerMode;
     if (patch.errorSummary !== undefined) this.run.error_summary = patch.errorSummary;
   }
   async findKnownCandidates(_campaignId: string, keys: string[]) {
-    const known = new Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status">>();
-    for (const row of this.candidates.values()) if (keys.includes(row.dedupe_key ?? "")) known.set(row.dedupe_key!, { id: row.id, resolution_status: row.resolution_status });
+    const known = new Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status" | "resolved_prospect_id">>();
+    for (const row of this.candidates.values()) if (keys.includes(row.dedupe_key ?? "")) known.set(row.dedupe_key!, { id: row.id, resolution_status: row.resolution_status, resolved_prospect_id: row.resolved_prospect_id });
     return known;
   }
   async insertCandidates(rows: CandidateInsert[]) {
@@ -156,6 +160,15 @@ class MemoryStore implements DiscoveryStore {
     if (patch.resolvedProspectId !== undefined) row.resolved_prospect_id = patch.resolvedProspectId;
     if (patch.summary !== undefined) row.candidate_summary_json = patch.summary as unknown as Record<string, unknown>;
   }
+  async recordRankObservations(rows: RankObservationInsert[]) {
+    for (const row of rows) {
+      const key = `${row.campaignRunId}:${row.provider}:${row.providerRef}:${row.category}:${row.location}`;
+      if (!this.rankObservations.some((existing) => `${existing.campaignRunId}:${existing.provider}:${existing.providerRef}:${existing.category}:${existing.location}` === key)) this.rankObservations.push({ ...row });
+    }
+  }
+  private linkRankObservations(candidateId: string, prospectId: string) {
+    for (const row of this.rankObservations) if (row.candidateId === candidateId && !row.prospectId) row.prospectId = prospectId;
+  }
   async findMatches(lookup: ResolutionLookup): Promise<ExistingProspectMatch[]> {
     const matches: ExistingProspectMatch[] = [];
     for (const ref of this.sourceRefs) if (ref.provider === lookup.provider && ref.externalId === lookup.providerRef) matches.push({ prospectId: ref.prospectId, matchedBy: "source_ref" });
@@ -171,11 +184,13 @@ class MemoryStore implements DiscoveryStore {
     const id = `prospect-${this.prospects.length + 1}`;
     this.prospects.push({ id, domain: inputRecord.record.canonicalDomain, phone: inputRecord.record.primaryPhone, name: inputRecord.record.normalizedName, city: inputRecord.record.city, websiteState: inputRecord.record.websiteState });
     this.sourceRefs.push({ prospectId: id, provider: inputRecord.details.provider, externalId: inputRecord.details.providerRef });
+    this.linkRankObservations(inputRecord.candidate.id, id);
     return { prospectId: id };
   }
   async attachToProspect(inputRecord: AttachProspectInput) {
     this.attached.push(inputRecord);
     this.sourceRefs.push({ prospectId: inputRecord.prospectId, provider: inputRecord.details.provider, externalId: inputRecord.details.providerRef });
+    this.linkRankObservations(inputRecord.candidate.id, inputRecord.prospectId);
   }
   async enqueue(job: { type: string; idempotencyKey: string; payload: Record<string, unknown> }) {
     if (!this.jobs.some((existing) => existing.key === job.idempotencyKey)) this.jobs.push({ type: job.type, key: job.idempotencyKey, payload: job.payload });
@@ -418,6 +433,26 @@ describe("discovery run job", () => {
     return fake;
   }
 
+  it("resolves DataForSEO candidates, which arrive enriched, without a single enrichment call", async () => {
+    const store = new MemoryStore({ target_categories: ["roofer"], target_locations: ["Uxbridge"] });
+    const enriched = (ref: string, overrides: Partial<DiscoveryCandidateInput> = {}) => input({ provider: "dataforseo", providerRef: ref, attribution: "Google Maps data via DataForSEO", businessStatus: "unknown", ...overrides });
+    const second = enriched("ChIJ2", { displayName: "Uxbridge Roof Care", websiteHint: "https://www.uxbridgeroofcare.co.uk", phoneHint: "01895 654321" });
+    const provider = fakeProvider({ "roofer|Uxbridge|": { candidates: [enriched("ChIJ1"), second, enriched("ChIJ1")], nextPageToken: null, requestCount: 1, costUsd: 0.002 } });
+
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+    expect(store.run).toMatchObject({ status: "completed", candidates_seen: 2, provider_requests: 1, search_units_completed: 1 });
+    expect([...store.candidates.values()].every((row) => row.candidate_website_state === "present")).toBe(true);
+
+    for (const row of [...store.candidates.values()]) {
+      await resolveCandidate({ candidateId: row.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+    }
+
+    expect(provider.detailCalls).toBe(0);
+    expect(store.created).toHaveLength(2);
+    expect(store.sourceRefs.map((ref) => `${ref.provider}:${ref.externalId}`).sort()).toEqual(["dataforseo:ChIJ1", "dataforseo:ChIJ2"]);
+    expect([...store.candidates.values()].map((row) => row.resolution_notes_json)).toEqual([expect.objectContaining({ enrichment: "stored", websiteState: "verified_website" }), expect.objectContaining({ enrichment: "stored", websiteState: "verified_website" })]);
+  });
+
   it("searches every unit, pages, dedupes across pages, enqueues one resolve job per candidate and completes", async () => {
     const store = new MemoryStore({ target_categories: ["roofer"], target_locations: ["Uxbridge", "Hayes"] });
     const provider = fakeProvider({
@@ -481,5 +516,167 @@ describe("discovery run job", () => {
     expect(outcome).toEqual({ status: "completed" });
     expect(store.run.status).toBe("failed");
     expect(store.run.error_summary).toContain("at least one category");
+  });
+
+  // ---------------------------------------------------------------------------
+  // DataForSEO-shaped behaviour: ranked, enriched candidates; caps; cost; queued tasks.
+  // ---------------------------------------------------------------------------
+
+  const ranked = (ref: string, position: number, overrides: Partial<DiscoveryCandidateInput> = {}): DiscoveryCandidateInput =>
+    input({ provider: "dataforseo", providerRef: ref, attribution: "Google Maps data via DataForSEO", businessStatus: "unknown", rank: { position, absolutePosition: position + 1 }, rating: { value: 4.5, reviewCount: 10 * position }, coordinates: { latitude: 51.5, longitude: -0.47 }, ...overrides });
+
+  function dataForSeoProvider(pages: Record<string, DiscoverySearchResult>, mode = "live"): DiscoveryProvider & { queries: DiscoverySearchQuery[]; detailCalls: number } {
+    return { ...fakeProvider(pages), name: "dataforseo" as const, mode, retention: { referenceRetention: "indefinite" as const, contentRetention: "expiring" as const, attributionRequired: false, attributionText: "Google Maps data via DataForSEO" } };
+  }
+
+  it("records the provider, mode and accumulated cost on the run and captures a ranking observation per ranked candidate", async () => {
+    const store = new MemoryStore({ target_categories: ["roofer"], target_locations: ["Uxbridge", "Hayes"] });
+    const provider = dataForSeoProvider({
+      "roofer|Uxbridge|": { candidates: [ranked("ChIJ1", 1), ranked("ChIJ2", 2), ranked("ChIJ3", 3, { rank: null, rating: null })], nextPageToken: null, requestCount: 1, costUsd: 0.002 },
+      "roofer|Hayes|": { candidates: [ranked("ChIJ2", 1), ranked("ChIJ4", 2)], nextPageToken: null, requestCount: 1, costUsd: 0.002 },
+    });
+
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+
+    expect(store.run).toMatchObject({ status: "completed", provider: "dataforseo", provider_mode: "live", provider_requests: 2, candidates_seen: 4, search_units_completed: 2 });
+    expect(store.run.provider_cost_usd).toBeCloseTo(0.004, 6);
+    // ChIJ3 has no rank, ChIJ2 is ranked in both units (re-seen, not re-created).
+    expect(store.candidates.size).toBe(4);
+    expect(store.rankObservations.map((row) => `${row.providerRef}@${row.location}#${row.position}`).sort()).toEqual(["ChIJ1@Uxbridge#1", "ChIJ2@Hayes#1", "ChIJ2@Uxbridge#2", "ChIJ4@Hayes#2"]);
+    expect(store.rankObservations[0]).toMatchObject({ campaignRunId: runId, category: "roofer", countryCode: "GB", absolutePosition: 2, rating: 4.5, reviewCount: 10, observedAt: at });
+    const stored = [...store.candidates.values()].find((row) => row.provider_ref === "ChIJ1")!.candidate_summary_json as DiscoveryCandidateInput;
+    expect(stored.rank).toEqual({ position: 1, absolutePosition: 2 });
+    expect(stored.coordinates).toEqual({ latitude: 51.5, longitude: -0.47 });
+  });
+
+  it("links ranking observations to the prospect once the candidate resolves", async () => {
+    const store = new MemoryStore();
+    const provider = dataForSeoProvider({ "roofer|Uxbridge|": { candidates: [ranked("ChIJ1", 3)], nextPageToken: null, requestCount: 1, costUsd: 0.002 } });
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+    const [candidate] = [...store.candidates.values()];
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+    expect(store.rankObservations).toEqual([expect.objectContaining({ candidateId: candidate.id, prospectId: "prospect-1", position: 3 })]);
+  });
+
+  it("does not re-create prospects or candidates on a repeat run but does add a fresh ranking observation", async () => {
+    const store = new MemoryStore();
+    const other = { displayName: "Uxbridge Roof Care", websiteHint: "https://www.uxbridgeroofcare.co.uk", phoneHint: "01895 654321" };
+    const provider = dataForSeoProvider({ "roofer|Uxbridge|": { candidates: [ranked("ChIJ1", 2), ranked("ChIJ2", 5, other)], nextPageToken: null, requestCount: 1, costUsd: 0.002 } });
+
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+    for (const row of [...store.candidates.values()]) await resolveCandidate({ candidateId: row.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+    expect(store.created).toHaveLength(2);
+    expect(store.rankObservations).toHaveLength(2);
+
+    // Second run: same listings, new positions.
+    const secondRunId = "55555555-5555-4555-8555-555555555555";
+    store.run = { ...store.run, id: secondRunId, status: "queued", cursor_json: {}, candidates_seen: 0, provider_requests: 0, provider_cost_usd: 0, search_units_completed: 0, error_summary: null, finished_at: null };
+    const again = dataForSeoProvider({ "roofer|Uxbridge|": { candidates: [ranked("ChIJ2", 1, other), ranked("ChIJ1", 4)], nextPageToken: null, requestCount: 1, costUsd: 0.002 } });
+    await runDiscovery({ campaignRunId: secondRunId, campaignId }, context(), { store, getProvider: () => again, config });
+    for (const row of [...store.candidates.values()]) await resolveCandidate({ candidateId: row.id, campaignId }, context(), { store, getProvider: () => again, probe: reachable, config });
+
+    expect(store.candidates.size).toBe(2);
+    expect(store.created).toHaveLength(2);
+    expect(store.prospects).toHaveLength(2);
+    expect(store.run).toMatchObject({ status: "completed", candidates_seen: 0, provider_requests: 1 });
+    expect(store.rankObservations.filter((row) => row.campaignRunId === secondRunId).map((row) => `${row.providerRef}#${row.position}`).sort()).toEqual(["ChIJ1#4", "ChIJ2#1"]);
+    expect(store.rankObservations.every((row) => row.prospectId)).toBe(true);
+    expect(store.jobs.filter((job) => job.type === CANDIDATE_RESOLVE_JOB)).toHaveLength(2);
+  });
+
+  it("stops at the provider request cap (environment ceiling, campaign may only lower it) and says so", async () => {
+    const pages = Object.fromEntries(["Uxbridge", "Hayes", "Ruislip"].map((location, index) => [`roofer|${location}|`, { candidates: [ranked(`ChIJ${index}`, 1)], nextPageToken: null, requestCount: 1, costUsd: 0.002 }]));
+
+    const store = new MemoryStore({ target_locations: ["Uxbridge", "Hayes", "Ruislip"], settings_json: { max_requests_per_run: 2 } });
+    const provider = dataForSeoProvider(pages);
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config: { ...config, discoveryMaxRequestsPerRun: 50 } });
+    expect(provider.queries).toHaveLength(2);
+    expect(store.run).toMatchObject({ status: "completed", provider_requests: 2, search_units_completed: 2 });
+    expect(store.run.error_summary).toContain("provider request cap (2)");
+
+    const ceiling = new MemoryStore({ target_locations: ["Uxbridge", "Hayes", "Ruislip"], settings_json: { max_requests_per_run: 500 } });
+    const second = dataForSeoProvider(pages);
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store: ceiling, getProvider: () => second, config: { ...config, discoveryMaxRequestsPerRun: 1 } });
+    expect(second.queries).toHaveLength(1);
+    expect(ceiling.run.error_summary).toContain("provider request cap (1)");
+  });
+
+  it("standard mode: persists the queued task in the cursor, continues after the poll delay without spending the request cap, then processes the retrieved page", async () => {
+    const store = new MemoryStore({ target_locations: ["Uxbridge", "Hayes"] });
+    let phase = 0;
+    const queries: DiscoverySearchQuery[] = [];
+    const provider: DiscoveryProvider = {
+      ...dataForSeoProvider({}, "standard"),
+      async searchCandidates(query) {
+        queries.push(query);
+        if (query.location === "Hayes") return { candidates: [ranked("ChIJ9", 1)], nextPageToken: null, requestCount: 1, costUsd: 0.0006 };
+        phase += 1;
+        if (phase === 1) { expect(query.pendingTaskRef).toBeNull(); return { candidates: [], nextPageToken: null, requestCount: 1, costUsd: 0.0006, pending: { taskRef: "task-1", retryAfterSeconds: 60 } }; }
+        expect(query.pendingTaskRef).toBe("task-1");
+        if (phase === 2) return { candidates: [], nextPageToken: null, requestCount: 0, costUsd: null, pending: { taskRef: "task-1", retryAfterSeconds: 60 } };
+        return { candidates: [ranked("ChIJ1", 1), ranked("ChIJ2", 2)], nextPageToken: null, requestCount: 0, costUsd: null };
+      },
+    };
+    const deps = { store, getProvider: () => provider, config: { ...config, discoveryMaxRequestsPerRun: 2 } };
+
+    const posted = await runDiscovery({ campaignRunId: runId, campaignId }, context(), deps);
+    expect(posted).toEqual({ status: "continue", delaySeconds: 60 });
+    expect(store.run).toMatchObject({ status: "running", provider_mode: "standard", provider_requests: 1, candidates_seen: 0 });
+    expect(store.run.cursor_json).toMatchObject({ unitIndex: 0, pendingTask: { taskRef: "task-1", polls: 0 } });
+
+    const stillQueued = await runDiscovery({ campaignRunId: runId, campaignId }, context(), deps);
+    expect(stillQueued).toEqual({ status: "continue", delaySeconds: 60 });
+    expect(store.run.provider_requests).toBe(1);
+    expect(store.run.cursor_json).toMatchObject({ pendingTask: { taskRef: "task-1", polls: 1 } });
+
+    const finished = await runDiscovery({ campaignRunId: runId, campaignId }, context(), deps);
+    expect(finished).toEqual({ status: "completed" });
+    expect(queries.map((query) => `${query.location}:${query.pendingTaskRef ?? ""}`)).toEqual(["Uxbridge:", "Uxbridge:task-1", "Uxbridge:task-1", "Hayes:"]);
+    expect(store.run).toMatchObject({ status: "completed", provider_requests: 2, candidates_seen: 3, search_units_completed: 2, error_summary: null });
+    expect(store.run.provider_cost_usd).toBeCloseTo(0.0012, 6);
+    expect(store.run.cursor_json).toEqual({ unitIndex: 2, pageToken: null, pagesFetched: 0 });
+    expect(store.rankObservations).toHaveLength(3);
+  });
+
+  it("fails the run when a queued task never completes within the timeout", async () => {
+    const store = new MemoryStore();
+    store.run.status = "running";
+    store.run.cursor_json = { unitIndex: 0, pageToken: null, pagesFetched: 0, pendingTask: { taskRef: "task-old", postedAt: "2026-09-14T00:00:00.000Z", polls: 40 } };
+    const provider = dataForSeoProvider({}, "standard");
+    await expect(runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config: { ...config, discoveryTaskTimeoutMinutes: 120 }, now: () => new Date("2026-09-14T03:00:00.000Z") })).rejects.toMatchObject({ name: "NonRetryableJobError" });
+    expect(store.run.status).toBe("failed");
+    expect(store.run.error_summary).toContain("task-old");
+    expect(provider.queries).toHaveLength(0);
+  });
+
+  it("website-missing: a DataForSEO listing without a URL becomes likely_no_website, never verified_no_website, from the single provider signal", async () => {
+    const store = new MemoryStore();
+    const provider = dataForSeoProvider({ "roofer|Uxbridge|": { candidates: [ranked("ChIJ1", 1, { websiteHint: null, websiteHintState: "absent" })], nextPageToken: null, requestCount: 1 } });
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+    const [candidate] = [...store.candidates.values()];
+    expect(candidate.candidate_website_state).toBe("absent");
+
+    const probe = async (): Promise<HttpProbeResult> => { throw new Error("nothing to probe"); };
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe, config });
+    expect(provider.detailCalls).toBe(0);
+    expect(store.created).toHaveLength(1);
+    expect(store.created[0].verification).toMatchObject({ state: "likely_no_website", confidence: 0.5, reasons: ["single_source_no_website"] });
+    expect(store.created[0].record.websiteState).toBe("likely_no_website");
+  });
+
+  it("website-present: a DataForSEO URL is normalised, probed by our own verifier and stored as provider-sourced evidence", async () => {
+    const store = new MemoryStore();
+    const provider = dataForSeoProvider({ "roofer|Uxbridge|": { candidates: [ranked("ChIJ1", 1, { websiteHint: "HTTP://WWW.ABRoofing.co.uk" })], nextPageToken: null, requestCount: 1 } });
+    await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
+    const [candidate] = [...store.candidates.values()];
+    expect(candidate.candidate_website_state).toBe("present");
+
+    const probed: string[] = [];
+    const probe = async (url: string): Promise<HttpProbeResult> => { probed.push(url); return { ok: true, url, finalUrl: "https://www.abroofing.co.uk/", statusCode: 200 }; };
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe, config });
+    expect(probed).toEqual(["http://www.abroofing.co.uk"]);
+    expect(store.created[0].verification).toMatchObject({ state: "verified_website", canonicalDomain: "abroofing.co.uk" });
+    expect(store.created[0].verification.signals[0]).toMatchObject({ source: "discovery_provider", kind: "website_url_present" });
+    expect(store.created[0].details.provider).toBe("dataforseo");
   });
 });

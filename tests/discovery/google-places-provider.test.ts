@@ -165,13 +165,16 @@ describe("Google Places adapter", () => {
 });
 
 describe("provider readiness", () => {
-  const original = process.env.GOOGLE_PLACES_API_KEY;
+  const original = { key: process.env.GOOGLE_PLACES_API_KEY, provider: process.env.DISCOVERY_PROVIDER };
   afterEach(() => {
-    if (original === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
-    else process.env.GOOGLE_PLACES_API_KEY = original;
+    if (original.key === undefined) delete process.env.GOOGLE_PLACES_API_KEY;
+    else process.env.GOOGLE_PLACES_API_KEY = original.key;
+    if (original.provider === undefined) delete process.env.DISCOVERY_PROVIDER;
+    else process.env.DISCOVERY_PROVIDER = original.provider;
   });
 
   it("reports the missing variable name without exposing values", () => {
+    process.env.DISCOVERY_PROVIDER = "google_places";
     delete process.env.GOOGLE_PLACES_API_KEY;
     expect(getDiscoveryProviderReadiness()).toEqual({ provider: "google_places", configured: false, missing: ["GOOGLE_PLACES_API_KEY"] });
     process.env.GOOGLE_PLACES_API_KEY = "abc";

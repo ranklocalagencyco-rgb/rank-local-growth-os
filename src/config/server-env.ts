@@ -4,6 +4,8 @@ import { z } from "zod";
 // Values are read from process.env at call time so they are never inlined into browser bundles.
 
 const serverSecretsSchema = z.object({
+  dataForSeoLogin: z.string().min(1).optional(),
+  dataForSeoPassword: z.string().min(1).optional(),
   googlePlacesApiKey: z.string().min(1).optional(),
   jobRunnerSecret: z.string().min(16).optional(),
 });
@@ -20,6 +22,8 @@ export function parseServerSecrets(environment: NodeJS.ProcessEnv = process.env)
   }
 
   return serverSecretsSchema.parse({
+    dataForSeoLogin: optionalEnvironmentValue(environment.DATAFORSEO_LOGIN),
+    dataForSeoPassword: optionalEnvironmentValue(environment.DATAFORSEO_PASSWORD),
     googlePlacesApiKey: optionalEnvironmentValue(environment.GOOGLE_PLACES_API_KEY),
     jobRunnerSecret: optionalEnvironmentValue(environment.JOB_RUNNER_SECRET),
   });

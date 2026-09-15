@@ -540,6 +540,14 @@ Google's Places policies restrict caching/storage of Places content with specifi
 
 This architecture avoids building the CRM on data that the application may not be entitled to store permanently.
 
+## 9.1a Provider selection (V1)
+
+- **DataForSEO Google Maps SERP** (`/v3/serp/google/maps/*`) is the primary discovery provider. It returns ranked Maps listings with business identity, website/domain, phone, rating, coordinates and search position from a keyword + location, at a fraction of the Places cost. Execution mode is configurable (`DATAFORSEO_MODE`): standard queue for automated background discovery (default, cheapest), priority queue for faster queued jobs, live for manual/on-demand runs. Output is normalised identically in every mode.
+- **Google Places** remains an optional fallback behind the same provider abstraction. It is only initialised when selected, so Google credentials are not required to run the application.
+- The listings surfaced through DataForSEO are still Google Maps content, so the retention posture above applies unchanged: durable place IDs, expiring candidate content, per-field provenance.
+- Ranking position is captured separately from business identity in `local_rank_observations` so a later local-SERP-visibility intelligence job can use it. It is not an "AI ranking score" and does not feed the Opportunity Score yet.
+- Website audits and website verification are performed by our own deterministic crawler/probe. DataForSEO is never used as the website crawler.
+
 ## 9.2 Discovery strategies
 
 ### Strategy A — No website attached

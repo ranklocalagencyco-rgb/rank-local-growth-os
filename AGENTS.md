@@ -28,7 +28,9 @@ Read:
 - Supabase/PostgreSQL
 - Trigger.dev or equivalent durable jobs
 - OpenRouter/Qwen for cheap AI tasks
-- Gmail/Google Places/PageSpeed added in later milestones
+- DataForSEO (Google Maps SERP) is the primary business-discovery provider; Google Places is an optional fallback behind the same adapter interface
+- Our own deterministic crawler performs website audits; no provider crawls websites for us
+- Gmail/PageSpeed added in later milestones
 
 ## Ticket workflow
 Before coding:

@@ -1,6 +1,52 @@
-import type { CampaignRun, CandidateResolutionStatus, DiscoveryCandidate, JobRow, WebsiteState } from "@/db/types";
+import type { CampaignRun, CandidateResolutionStatus, DiscoveryCandidate, JobRow, LocalRankObservation, WebsiteState } from "@/db/types";
 
 // Presentation helpers for discovery state. Pure functions; no data access.
+
+/** Human-readable provider name for a stored provider id. */
+export function discoveryProviderLabel(provider: string | null | undefined): string {
+  switch (provider) {
+    case "dataforseo":
+      return "DataForSEO";
+    case "google_places":
+      return "Google Places";
+    case null:
+    case undefined:
+    case "":
+      return "Not set";
+    default:
+      return provider.replace(/_/g, " ");
+  }
+}
+
+export function discoveryModeLabel(mode: string | null | undefined): string | null {
+  switch (mode) {
+    case "standard":
+      return "standard queue";
+    case "priority":
+      return "priority queue";
+    case "live":
+      return "live";
+    default:
+      return mode ? mode.replace(/_/g, " ") : null;
+  }
+}
+
+/** Formats a provider-reported USD cost; null when nothing was charged or reported. */
+export function formatProviderCost(costUsd: number | null | undefined): string | null {
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd <= 0) return null;
+  return `$${costUsd < 0.01 ? costUsd.toFixed(4) : costUsd.toFixed(2)}`;
+}
+
+/** "#3 · 4.8 (120 reviews)" style summary of a ranking observation. */
+export function rankObservationLabel(observation: Pick<LocalRankObservation, "rank_position" | "rating" | "review_count"> | null | undefined): string | null {
+  if (!observation) return null;
+  const parts = [`#${observation.rank_position}`];
+  if (typeof observation.rating === "number") {
+    const reviews = typeof observation.review_count === "number" ? ` (${observation.review_count} review${observation.review_count === 1 ? "" : "s"})` : "";
+    parts.push(`${Number(observation.rating).toFixed(1)}${reviews}`);
+  }
+  return parts.join(" · ");
+}
 
 export function websiteStateLabel(state: WebsiteState | null | undefined): string {
   switch (state) {

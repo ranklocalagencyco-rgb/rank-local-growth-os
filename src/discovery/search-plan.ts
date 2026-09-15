@@ -2,10 +2,20 @@ import type { Campaign } from "@/db/types";
 
 export type SearchUnit = { category: string; location: string };
 
+/** A provider search that was queued (e.g. DataForSEO standard mode) and must be retrieved on a later invocation. */
+export type PendingSearchTask = {
+  taskRef: string;
+  postedAt: string;
+  /** Number of retrieval attempts made so far. */
+  polls: number;
+};
+
 export type DiscoveryCursor = {
   unitIndex: number;
   pageToken: string | null;
   pagesFetched: number;
+  /** Set while the current unit's page is waiting on a queued provider task. */
+  pendingTask?: PendingSearchTask | null;
 };
 
 export const INITIAL_CURSOR: DiscoveryCursor = { unitIndex: 0, pageToken: null, pagesFetched: 0 };
@@ -42,7 +52,18 @@ export function parseCursor(value: unknown): DiscoveryCursor {
   const unitIndex = typeof record.unitIndex === "number" && Number.isInteger(record.unitIndex) && record.unitIndex >= 0 ? record.unitIndex : 0;
   const pageToken = typeof record.pageToken === "string" && record.pageToken ? record.pageToken : null;
   const pagesFetched = typeof record.pagesFetched === "number" && Number.isInteger(record.pagesFetched) && record.pagesFetched >= 0 ? record.pagesFetched : 0;
-  return { unitIndex, pageToken, pagesFetched };
+  const cursor: DiscoveryCursor = { unitIndex, pageToken, pagesFetched };
+  const pending = parsePendingTask(record.pendingTask);
+  if (pending) cursor.pendingTask = pending;
+  return cursor;
+}
+
+function parsePendingTask(value: unknown): PendingSearchTask | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.taskRef !== "string" || !record.taskRef || typeof record.postedAt !== "string" || !record.postedAt) return null;
+  const polls = typeof record.polls === "number" && Number.isInteger(record.polls) && record.polls >= 0 ? record.polls : 0;
+  return { taskRef: record.taskRef, postedAt: record.postedAt, polls };
 }
 
 export function isCursorFinished(cursor: DiscoveryCursor, unitCount: number): boolean {

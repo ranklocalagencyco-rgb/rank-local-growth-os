@@ -205,6 +205,44 @@ resolved_prospect_id
 
 Provider content subject to short-lived storage restrictions should expire/purge according to policy.
 
+`provider` is `dataforseo` (primary; Google Maps SERP via DataForSEO) or `google_places` (optional fallback). `provider_ref` is the Google place ID in both cases (DataForSEO falls back to `cid:<id>`). DataForSEO candidates arrive with website/phone in the search result, so `candidate_summary_json` is already enriched and carries `rank`, `rating` and `coordinates` alongside the identity fields until purge.
+
+## campaign_runs (discovery fields)
+
+```text
+provider            dataforseo | google_places
+provider_mode       standard | priority | live (DataForSEO execution mode), null for Google
+provider_requests   billable provider requests made by the run (free task retrievals excluded)
+provider_cost_usd   sum of provider-reported task cost
+cursor_json         { unitIndex, pageToken, pagesFetched, pendingTask?: { taskRef, postedAt, polls } }
+```
+
+`pendingTask` holds a queued DataForSEO task (standard/priority mode) between job invocations; it is cleared once the result is retrieved.
+
+## local_rank_observations
+
+Where a listing ranked in the provider's local results for one campaign search unit. Our own measurement: retained, not purged with candidate content, linked to the prospect after resolution. Intended for a later local-SERP-visibility intelligence job; not used by the Opportunity Score yet.
+
+```text
+id
+workspace_id
+campaign_id
+campaign_run_id
+candidate_id
+prospect_id            (set when the candidate resolves)
+provider
+provider_ref
+search_category
+search_location
+country_code
+rank_position          (organic position among local listings, 1-based)
+rank_absolute          (position including ads, nullable)
+rating                 (listing rating value, nullable)
+review_count           (nullable)
+observed_at
+unique (campaign_run_id, provider, provider_ref, search_category, search_location)
+```
+
 ---
 
 # 6. Contacts

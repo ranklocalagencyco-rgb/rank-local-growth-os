@@ -33,7 +33,11 @@ export type CampaignRun = {
 	requested_by: string | null;
 	job_id: string | null;
 	provider: string | null;
+	/** Provider execution mode used for the run (e.g. DataForSEO standard/priority/live), when the provider reports one. */
+	provider_mode: string | null;
 	provider_requests: number;
+	/** Accumulated provider-reported cost for the run in USD. */
+	provider_cost_usd: number;
 	search_units_total: number;
 	search_units_completed: number;
 	status: "queued" | "running" | "completed" | "failed";
@@ -148,6 +152,27 @@ export type DiscoveryCandidate = {
 	updated_at: string;
 };
 
+/** One observation of where a listing ranked in a provider's local search results for a campaign search unit. Retained; not provider content. */
+export type LocalRankObservation = {
+	id: string;
+	workspace_id: string;
+	campaign_id: string;
+	campaign_run_id: string | null;
+	candidate_id: string | null;
+	prospect_id: string | null;
+	provider: string;
+	provider_ref: string;
+	search_category: string;
+	search_location: string;
+	country_code: string;
+	rank_position: number;
+	rank_absolute: number | null;
+	rating: number | null;
+	review_count: number | null;
+	observed_at: string;
+	created_at: string;
+};
+
 export type JobRow = {
 	id: string;
 	workspace_id: string;
@@ -224,6 +249,7 @@ export type Database = {
 			prospect_field_evidence: TableDefinition<ProspectFieldEvidence>;
 			prospect_website_verifications: TableDefinition<ProspectWebsiteVerification>;
 			discovery_candidates: TableDefinition<DiscoveryCandidate>;
+			local_rank_observations: TableDefinition<LocalRankObservation>;
 			jobs: TableDefinition<JobRow>;
 			domain_events: TableDefinition<DomainEventRow>;
 			activity_events: TableDefinition<ActivityEvent>;

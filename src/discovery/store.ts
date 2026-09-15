@@ -35,9 +35,31 @@ export type CampaignRunPatch = Partial<{
   searchUnitsTotal: number;
   searchUnitsCompleted: number;
   providerRequests: number;
+  providerCostUsd: number;
   provider: string;
+  providerMode: string | null;
   errorSummary: string | null;
 }>;
+
+/** One ranking observation for a candidate seen on a provider results page. Idempotent per run + unit + reference. */
+export type RankObservationInsert = {
+  workspaceId: string;
+  campaignId: string;
+  campaignRunId: string;
+  candidateId: string;
+  /** Known at insert time when the candidate already resolved on an earlier run; otherwise linked at resolution. */
+  prospectId: string | null;
+  provider: string;
+  providerRef: string;
+  category: string;
+  location: string;
+  countryCode: string;
+  position: number;
+  absolutePosition: number | null;
+  rating: number | null;
+  reviewCount: number | null;
+  observedAt: string;
+};
 
 export type CreateProspectInput = {
   candidate: DiscoveryCandidate;
@@ -63,11 +85,14 @@ export interface DiscoveryStore {
   updateCampaignRun(runId: string, patch: CampaignRunPatch): Promise<void>;
 
   /** Returns existing candidates for the campaign keyed by dedupe key. */
-  findKnownCandidates(campaignId: string, keys: string[]): Promise<Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status">>>;
+  findKnownCandidates(campaignId: string, keys: string[]): Promise<Map<string, Pick<DiscoveryCandidate, "id" | "resolution_status" | "resolved_prospect_id">>>;
   insertCandidates(rows: CandidateInsert[]): Promise<Pick<DiscoveryCandidate, "id" | "provider" | "provider_ref">[]>;
   touchCandidates(candidateIds: string[], campaignRunId: string, lastSeenAt: string): Promise<void>;
   getCandidate(workspaceId: string, candidateId: string): Promise<DiscoveryCandidate | null>;
   updateCandidate(candidateId: string, patch: CandidatePatch): Promise<void>;
+
+  /** Stores ranking observations (no-op for providers without ranking context). Must be idempotent. */
+  recordRankObservations(rows: RankObservationInsert[]): Promise<void>;
 
   findMatches(lookup: ResolutionLookup): Promise<ExistingProspectMatch[]>;
   createProspect(input: CreateProspectInput): Promise<{ prospectId: string }>;

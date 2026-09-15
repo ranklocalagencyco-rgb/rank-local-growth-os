@@ -3,9 +3,9 @@ import Link from "next/link";
 import { getRuntimeConfig } from "@/config/env";
 import type { WebsiteState } from "@/db/types";
 import { getCampaignDetail } from "@/data/discovery";
-import { getDiscoveryProviderReadiness } from "@/discovery/providers/registry";
+import { discoveryProviderAttribution, getDiscoveryProviderReadiness } from "@/discovery/providers/registry";
 import { campaignStatusLabel, formatDate } from "@/domain/crm";
-import { candidateHintLabel, countByResolution, resolutionStatusLabel, resolutionTone, summariseDiscoveryStatus, websiteStateLabel, websiteStateTone } from "@/domain/discovery";
+import { candidateHintLabel, countByResolution, discoveryModeLabel, discoveryProviderLabel, formatProviderCost, rankObservationLabel, resolutionStatusLabel, resolutionTone, summariseDiscoveryStatus, websiteStateLabel, websiteStateTone } from "@/domain/discovery";
 import { getWorkspaceContext } from "@/domain/workspaces";
 import { processJobsNowAction, runDiscoveryAction } from "./actions";
 
@@ -39,8 +39,12 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
   const prospectsLinked = counts.created + counts.matched;
   const runInFlight = status.phase === "queued" || status.phase === "running";
   const canRun = readiness.configured && !runInFlight && campaign.target_categories.length > 0 && campaign.target_locations.length > 0;
-  const hasProviderContent = detail.candidates.some((candidate) => candidate.provider === "google_places" && !candidate.content_purged_at);
+  const attributions = [...new Set(detail.candidates.filter((candidate) => !candidate.content_purged_at).map((candidate) => discoveryProviderAttribution(candidate.provider)).filter((text): text is string => Boolean(text)))];
   const pendingWork = detail.resolveJobs.queued + detail.resolveJobs.running + detail.resolveJobs.failed;
+  const providerLabel = discoveryProviderLabel(readiness.provider);
+  const latestRunProvider = latestRun?.provider ? discoveryProviderLabel(latestRun.provider) : null;
+  const latestRunMode = discoveryModeLabel(latestRun?.provider_mode);
+  const latestRunCost = formatProviderCost(latestRun?.provider_cost_usd);
 
   return <main className="page-shell">
     <Link className="back-link" href="/campaigns">← Back to campaigns</Link>
@@ -51,9 +55,10 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
 
     {query.notice ? <div className="notice success" role="status">{query.notice}</div> : null}
     {query.error ? <div className="notice danger" role="alert">{query.error}</div> : null}
-    {!readiness.configured ? <div className="notice warning" role="alert"><strong>Discovery provider not configured.</strong> Add {readiness.missing.join(", ")} to the server environment to enable the {readiness.provider.replace(/_/g, " ")} adapter. The key is only ever read server-side.</div> : null}
+    {!readiness.configured ? <div className="notice warning" role="alert"><strong>Discovery provider not configured.</strong> Add {readiness.missing.join(", ")} to the server environment to enable the {providerLabel} adapter. Credentials are only ever read server-side.</div> : null}
 
     <section className="stats">
+      <div className="stat"><span>Discovery provider</span><strong>{latestRunProvider ?? providerLabel}</strong><p className="muted">{latestRunProvider ? `Last run${latestRunMode ? ` · ${latestRunMode}` : ""}${latestRunCost ? ` · ${latestRunCost}` : ""}` : `Configured provider${readiness.configured ? "" : " (credentials missing)"}`}</p></div>
       <div className="stat"><span>Discovery status</span><strong>{status.headline}</strong>{status.detail ? <p className="muted">{status.detail}</p> : null}</div>
       <div className="stat"><span>Candidates</span><strong>{detail.candidates.length}</strong><p className="muted">{counts.pending} pending · {counts.ambiguous} need review · {counts.rejected} rejected</p></div>
       <div className="stat"><span>Prospects linked</span><strong>{prospectsLinked}</strong><p className="muted">{counts.created} created · {counts.matched} matched existing</p></div>
@@ -61,7 +66,7 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
 
     <section className="panel">
       <div className="panel-header">
-        <div><h2>Run discovery</h2><p>Searches every category × location pair through the {readiness.provider.replace(/_/g, " ")} adapter in a durable background job, then verifies websites and resolves prospects.</p></div>
+        <div><h2>Run discovery</h2><p>Searches every category × location pair through the {providerLabel} adapter in a durable background job, then verifies websites with our own crawler and resolves prospects.</p></div>
         <div className="actions">
           <form action={runDiscoveryAction}><input type="hidden" name="campaignId" value={campaign.id} /><button type="submit" className="button primary" disabled={!canRun}>{runInFlight ? "Run in progress" : "Run discovery"}</button></form>
           {config.appEnv === "local" ? <form action={processJobsNowAction}><input type="hidden" name="campaignId" value={campaign.id} /><button type="submit" className="button">Process queued jobs (local)</button></form> : null}
@@ -72,7 +77,7 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
     </section>
 
     <section className="panel">
-      <div className="panel-header"><div><h2>Candidates</h2><p>{detail.candidates.length === 0 ? "Nothing discovered yet." : `Showing the latest ${detail.candidates.length} candidate${detail.candidates.length === 1 ? "" : "s"}.`}</p></div>{hasProviderContent ? <span className="attribution">Business listings powered by Google</span> : null}</div>
+      <div className="panel-header"><div><h2>Candidates</h2><p>{detail.candidates.length === 0 ? "Nothing discovered yet." : `Showing the latest ${detail.candidates.length} candidate${detail.candidates.length === 1 ? "" : "s"}.`}</p></div>{attributions.length > 0 ? <span className="attribution">Business listings powered by {attributions.join(" and ")}</span> : null}</div>
       {detail.candidates.length === 0 ? (
         <div className="empty-state">
           <h3>No candidates yet</h3>
@@ -81,13 +86,14 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
       ) : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Business</th><th>Category</th><th>Location</th><th>Website state</th><th>Source</th><th>Resolution</th></tr></thead>
+            <thead><tr><th>Business</th><th>Category</th><th>Location</th><th>Website state</th><th>Rank</th><th>Source</th><th>Resolution</th></tr></thead>
             <tbody>
               {detail.candidates.map((candidate) => {
                 const prospect = candidate.resolved_prospect_id ? detail.prospectsById.get(candidate.resolved_prospect_id) ?? null : null;
                 const websiteState: WebsiteState | null = prospect?.website_state ?? null;
                 const notes = candidate.resolution_notes_json as { websiteState?: string; websiteUrl?: string | null; reason?: string; candidateProspectIds?: string[] };
                 const displayedState: WebsiteState | null = websiteState ?? (typeof notes.websiteState === "string" ? (notes.websiteState as WebsiteState) : null);
+                const rank = detail.rankByCandidateId.get(candidate.id) ?? null;
                 return (
                   <tr key={candidate.id}>
                     <td>
@@ -97,7 +103,8 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
                     <td>{candidate.candidate_category ?? "—"}</td>
                     <td>{candidate.candidate_location ?? "—"}</td>
                     <td>{displayedState ? <span className={`status-pill tone-${websiteStateTone(displayedState)}`}>{websiteStateLabel(displayedState)}</span> : <span className="status-pill tone-neutral">{candidate.resolution_status === "pending" ? "Verifying…" : candidateHintLabel(candidate.candidate_website_state)}</span>}</td>
-                    <td><div>{candidate.provider.replace(/_/g, " ")}</div><div className="muted">ref {candidate.provider_ref.slice(0, 12)}… · seen {formatDate(candidate.last_seen_at)}</div></td>
+                    <td>{rank ? <><div>{rankObservationLabel(rank)}</div><div className="muted">{rank.search_category} in {rank.search_location} · {formatDate(rank.observed_at)}</div></> : <span className="muted">—</span>}</td>
+                    <td><div>{discoveryProviderLabel(candidate.provider)}</div><div className="muted">ref {candidate.provider_ref.slice(0, 12)}… · seen {formatDate(candidate.last_seen_at)}</div></td>
                     <td>
                       <span className={`status-pill tone-${resolutionTone(candidate.resolution_status)}`}>{resolutionStatusLabel(candidate.resolution_status)}</span>
                       {candidate.resolution_status === "rejected" && notes.reason ? <div className="muted">{notes.reason.replace(/_/g, " ")}</div> : null}
@@ -117,7 +124,7 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
       {detail.runs.length === 0 ? <div className="empty-state"><p>No runs yet.</p></div> : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Started</th><th>Status</th><th>Progress</th><th>Candidates</th><th>Provider requests</th><th>Notes</th></tr></thead>
+            <thead><tr><th>Started</th><th>Status</th><th>Provider</th><th>Progress</th><th>Candidates</th><th>Provider requests</th><th>Notes</th></tr></thead>
             <tbody>
               {detail.runs.map((run) => {
                 const job = run.job_id ? detail.runJobsById.get(run.job_id) ?? null : null;
@@ -125,9 +132,10 @@ export default async function CampaignDetailPage({ params, searchParams }: Campa
                   <tr key={run.id}>
                     <td>{formatDateTime(run.started_at ?? run.created_at)}</td>
                     <td><span className={`status-pill tone-${run.status === "completed" ? "good" : run.status === "failed" ? "bad" : "neutral"}`}>{run.status}</span>{job ? <div className="muted">job {job.status}{job.attempts ? ` · attempt ${job.attempts}` : ""}</div> : null}</td>
+                    <td>{run.provider ? discoveryProviderLabel(run.provider) : "—"}{discoveryModeLabel(run.provider_mode) ? <div className="muted">{discoveryModeLabel(run.provider_mode)}</div> : null}</td>
                     <td>{run.search_units_completed} / {run.search_units_total} units</td>
                     <td>{run.candidates_seen}</td>
-                    <td>{run.provider_requests}</td>
+                    <td>{run.provider_requests}{formatProviderCost(run.provider_cost_usd) ? <div className="muted">{formatProviderCost(run.provider_cost_usd)}</div> : null}</td>
                     <td className="muted">{run.error_summary ?? job?.last_error ?? (run.finished_at ? `Finished ${formatDateTime(run.finished_at)}` : "—")}</td>
                   </tr>
                 );
