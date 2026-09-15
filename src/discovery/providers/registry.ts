@@ -23,7 +23,8 @@ export function getDiscoveryProviderReadiness(): DiscoveryProviderReadiness {
 }
 
 export function getDiscoveryProvider(): DiscoveryProvider {
-  const provider = getRuntimeConfig().discoveryProvider;
+  const config = getRuntimeConfig();
+  const provider = config.discoveryProvider;
   const secrets = getServerSecrets();
 
   switch (provider) {
@@ -31,7 +32,7 @@ export function getDiscoveryProvider(): DiscoveryProvider {
       if (!secrets.googlePlacesApiKey) {
         throw new DiscoveryProviderError("GOOGLE_PLACES_API_KEY is not configured", "not_configured", false);
       }
-      return new GooglePlacesDiscoveryProvider({ apiKey: secrets.googlePlacesApiKey });
+      return new GooglePlacesDiscoveryProvider({ apiKey: secrets.googlePlacesApiKey, searchProfile: config.discoveryEnrichmentMode === "inline" ? "inline" : "minimal" });
     }
   }
 }

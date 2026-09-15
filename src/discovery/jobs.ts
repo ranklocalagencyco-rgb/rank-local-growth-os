@@ -2,8 +2,8 @@ import { z } from "zod";
 
 import type { RuntimeConfig } from "@/config/env";
 import { dedupeCandidates, partitionAgainstKnown } from "@/discovery/dedupe";
-import { candidateDedupeKey, DiscoveryProviderError, type DiscoveryCandidateInput, type DiscoveryProvider } from "@/discovery/provider";
-import { buildNewProspectRecord, buildResolutionLookup, decideResolution } from "@/discovery/resolver";
+import { candidateDedupeKey, DiscoveryProviderError, isEnrichedCandidate, type DiscoveryCandidateInput, type DiscoveryProvider } from "@/discovery/provider";
+import { buildNewProspectRecord, buildResolutionLookup, decideResolution, type ResolutionDecision } from "@/discovery/resolver";
 import { advanceCursor, buildSearchUnits, isCursorFinished, parseCursor } from "@/discovery/search-plan";
 import type { DiscoveryStore } from "@/discovery/store";
 import { probeWebsite, type HttpProbeResult } from "@/discovery/website/http-probe";
@@ -155,7 +155,8 @@ export async function runDiscovery(payload: DiscoveryRunPayload, context: Pick<J
 }
 
 export async function verifyCandidateWebsite(details: DiscoveryCandidateInput, probe: (url: string) => Promise<HttpProbeResult>, observedAt: string): Promise<WebsiteVerification> {
-  const signals: WebsiteSignal[] = signalsFromWebsiteHint({ source: "discovery_provider", url: details.websiteHint, observedAt });
+  // A Stage 1 candidate has not been asked about its website yet; an "unknown" hint must never count as a negative signal.
+  const signals: WebsiteSignal[] = details.websiteHintState === "unknown" ? [] : signalsFromWebsiteHint({ source: "discovery_provider", url: details.websiteHint, observedAt });
   const urlToProbe = officialUrlToProbe(signals);
 
   if (urlToProbe) {
@@ -171,7 +172,19 @@ function summaryHasContent(summary: Record<string, unknown>): summary is Record<
   return typeof summary.providerRef === "string" && summary.providerRef.length > 0;
 }
 
-/** Resolves one discovery candidate into a canonical prospect (or flags it). */
+/** How the candidate's Stage 2 contact fields were obtained for this resolution, recorded in the resolution notes. */
+export type EnrichmentOutcome = "stored" | "fetched" | "skipped";
+
+/**
+ * Resolves one discovery candidate into a canonical prospect (or flags it).
+ *
+ * Stage 2 enrichment (website + phone) is the expensive provider call, so it runs at most once per
+ * candidate and only after the cheaper checks have failed to settle the outcome:
+ *   1. stored enriched content is reused (retries never re-fetch);
+ *   2. nameless or permanently closed candidates are rejected on Stage 1 data alone;
+ *   3. a place already attached to a prospect by source reference is attached without enrichment;
+ *   4. everything else is enriched exactly once, then verified and matched.
+ */
 export async function resolveCandidate(payload: CandidateResolvePayload, context: Pick<JobContext, "job" | "logger">, deps: DiscoveryJobDependencies): Promise<JobOutcome> {
   const { store } = deps;
   const now = deps.now ?? (() => new Date());
@@ -184,12 +197,8 @@ export async function resolveCandidate(payload: CandidateResolvePayload, context
 
   await store.updateCandidate(candidate.id, { status: "resolving" });
 
-  // Prefer the short-lived stored content; re-fetch from the provider once it has been purged.
-  let details: DiscoveryCandidateInput | null = null;
-  const contentFresh = !candidate.content_purged_at && (!candidate.expires_at || new Date(candidate.expires_at) > now()) && summaryHasContent(candidate.candidate_summary_json);
-  if (contentFresh) {
-    details = candidate.candidate_summary_json as unknown as DiscoveryCandidateInput;
-  } else {
+  // The single Stage 2 provider call. Used for enrichment and for re-fetching purged content; never invoked twice in one run.
+  const fetchDetails = async (): Promise<DiscoveryCandidateInput | null> => {
     let provider: DiscoveryProvider;
     try {
       provider = deps.getProvider();
@@ -198,7 +207,7 @@ export async function resolveCandidate(payload: CandidateResolvePayload, context
       throw new NonRetryableJobError(error instanceof Error ? error.message : "Discovery provider unavailable");
     }
     try {
-      details = await provider.getReferenceDetails(candidate.provider_ref);
+      return await provider.getReferenceDetails(candidate.provider_ref);
     } catch (error) {
       if (providerFailureIsFatal(error)) {
         await store.updateCandidate(candidate.id, { status: "failed", resolutionStatus: "failed", resolutionNotes: { reason: error instanceof Error ? error.message : "provider_error" } });
@@ -207,52 +216,102 @@ export async function resolveCandidate(payload: CandidateResolvePayload, context
       await store.updateCandidate(candidate.id, { status: "new" });
       throw error;
     }
-    if (details) {
-      await store.updateCandidate(candidate.id, { summary: details, expiresAt: expiresAt(now(), deps.config.discoveryCandidateTtlHours), websiteHintState: details.websiteHintState });
-    }
-  }
+  };
 
-  if (!details) {
+  const storeDetails = async (details: DiscoveryCandidateInput): Promise<void> => {
+    await store.updateCandidate(candidate.id, { summary: details, expiresAt: expiresAt(now(), deps.config.discoveryCandidateTtlHours), websiteHintState: details.websiteHintState });
+  };
+
+  const rejectUnavailable = async (): Promise<JobOutcome> => {
     await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "rejected", resolutionConfidence: 1, resolutionNotes: { reason: "reference_no_longer_available" } });
+    return { status: "completed" };
+  };
+
+  let enrichment: EnrichmentOutcome = "stored";
+
+  // Prefer the short-lived stored content; re-fetch from the provider once it has been purged.
+  let details: DiscoveryCandidateInput | null = null;
+  const contentFresh = !candidate.content_purged_at && (!candidate.expires_at || new Date(candidate.expires_at) > now()) && summaryHasContent(candidate.candidate_summary_json);
+  if (contentFresh) {
+    details = candidate.candidate_summary_json as unknown as DiscoveryCandidateInput;
+  } else {
+    details = await fetchDetails();
+    enrichment = "fetched";
+    if (details) await storeDetails(details);
+  }
+  if (!details) return rejectUnavailable();
+
+  // Pre-screen on Stage 1 data: a nameless or permanently closed business never earns an enrichment call.
+  const preScreen = decideResolution({ candidate: details, matches: [] });
+  if (preScreen.resolution === "rejected") {
+    if (!isEnrichedCandidate(details)) enrichment = "skipped";
+    await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "rejected", resolutionConfidence: preScreen.confidence, resolutionNotes: { reason: preScreen.reason, warnings: preScreen.warnings, enrichment } });
+    context.logger.info("candidate.resolved", { candidateId: candidate.id, resolution: "rejected", reason: preScreen.reason, enrichment });
     return { status: "completed" };
   }
 
   const observedAt = now().toISOString();
-  const verification = await verifyCandidateWebsite(details, probe, observedAt);
-  const lookup = buildResolutionLookup({ workspaceId, candidate: details, verification });
-  const matches = await store.findMatches(lookup);
-  const decision = decideResolution({ candidate: details, matches });
 
-  switch (decision.resolution) {
-    case "rejected": {
-      await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "rejected", resolutionConfidence: decision.confidence, resolutionNotes: { reason: decision.reason, warnings: decision.warnings, websiteState: verification.state } });
-      break;
+  const recordDecision = async (details: DiscoveryCandidateInput, decision: ResolutionDecision, verification: WebsiteVerification | null): Promise<void> => {
+    switch (decision.resolution) {
+      case "rejected": {
+        await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "rejected", resolutionConfidence: decision.confidence, resolutionNotes: { reason: decision.reason, warnings: decision.warnings, websiteState: verification?.state ?? null, enrichment } });
+        break;
+      }
+      case "ambiguous": {
+        await store.updateCandidate(candidate.id, {
+          status: "resolved",
+          resolutionStatus: "ambiguous",
+          resolutionConfidence: decision.confidence,
+          resolutionNotes: { matchedIdentifiers: decision.matchedIdentifiers, candidateProspectIds: decision.candidateProspectIds, warnings: decision.warnings, websiteState: verification?.state ?? null, websiteUrl: verification?.websiteUrl ?? null, enrichment },
+        });
+        await store.recordActivity({ workspaceId, campaignId: candidate.campaign_id, prospectId: null, eventType: "candidate.ambiguous", summary: `Candidate needs manual review: possible match with ${decision.candidateProspectIds.length} existing prospect${decision.candidateProspectIds.length === 1 ? "" : "s"}.`, metadata: { candidateId: candidate.id, candidateProspectIds: decision.candidateProspectIds }, idempotencyKey: `candidate.ambiguous:${candidate.id}` });
+        break;
+      }
+      case "matched": {
+        await store.attachToProspect({ candidate, details, prospectId: decision.prospectId, verification, matchedIdentifiers: decision.matchedIdentifiers, now: observedAt });
+        await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "matched", resolutionConfidence: decision.confidence, resolvedProspectId: decision.prospectId, resolutionNotes: { matchedIdentifiers: decision.matchedIdentifiers, warnings: decision.warnings, websiteState: verification?.state ?? null, enrichment } });
+        break;
+      }
+      case "create": {
+        if (!verification) throw new NonRetryableJobError("Cannot create a prospect before its website has been verified");
+        const lookup = buildResolutionLookup({ workspaceId, candidate: details, verification });
+        const record = buildNewProspectRecord({ workspaceId, candidate: details, verification, lookup, defaultCountryCode: "GB" });
+        const { prospectId } = await store.createProspect({ candidate, details, record, verification, now: observedAt });
+        await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "created", resolutionConfidence: decision.confidence, resolvedProspectId: prospectId, resolutionNotes: { warnings: decision.warnings, websiteState: verification.state, enrichment } });
+        await store.recordDomainEvent({ workspaceId, aggregateType: "prospect", aggregateId: prospectId, eventType: "prospect.created", payload: { candidateId: candidate.id, campaignId: candidate.campaign_id, websiteState: verification.state }, idempotencyKey: `prospect.created:${prospectId}` });
+        break;
+      }
     }
-    case "ambiguous": {
-      await store.updateCandidate(candidate.id, {
-        status: "resolved",
-        resolutionStatus: "ambiguous",
-        resolutionConfidence: decision.confidence,
-        resolutionNotes: { matchedIdentifiers: decision.matchedIdentifiers, candidateProspectIds: decision.candidateProspectIds, warnings: decision.warnings, websiteState: verification.state, websiteUrl: verification.websiteUrl },
-      });
-      await store.recordActivity({ workspaceId, campaignId: candidate.campaign_id, prospectId: null, eventType: "candidate.ambiguous", summary: `Candidate needs manual review: possible match with ${decision.candidateProspectIds.length} existing prospect${decision.candidateProspectIds.length === 1 ? "" : "s"}.`, metadata: { candidateId: candidate.id, candidateProspectIds: decision.candidateProspectIds }, idempotencyKey: `candidate.ambiguous:${candidate.id}` });
-      break;
-    }
-    case "matched": {
-      await store.attachToProspect({ candidate, details, prospectId: decision.prospectId, verification, matchedIdentifiers: decision.matchedIdentifiers, now: observedAt });
-      await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "matched", resolutionConfidence: decision.confidence, resolvedProspectId: decision.prospectId, resolutionNotes: { matchedIdentifiers: decision.matchedIdentifiers, warnings: decision.warnings, websiteState: verification.state } });
-      break;
-    }
-    case "create": {
-      const record = buildNewProspectRecord({ workspaceId, candidate: details, verification, lookup, defaultCountryCode: "GB" });
-      const { prospectId } = await store.createProspect({ candidate, details, record, verification, now: observedAt });
-      await store.updateCandidate(candidate.id, { status: "resolved", resolutionStatus: "created", resolutionConfidence: decision.confidence, resolvedProspectId: prospectId, resolutionNotes: { warnings: decision.warnings, websiteState: verification.state } });
-      await store.recordDomainEvent({ workspaceId, aggregateType: "prospect", aggregateId: prospectId, eventType: "prospect.created", payload: { candidateId: candidate.id, campaignId: candidate.campaign_id, websiteState: verification.state }, idempotencyKey: `prospect.created:${prospectId}` });
-      break;
+    context.logger.info("candidate.resolved", { candidateId: candidate.id, resolution: decision.resolution, websiteState: verification?.state ?? null, enrichment });
+  };
+
+  // A place already attached to a prospect by its source reference is a duplicate of that prospect: attach without enrichment.
+  if (!isEnrichedCandidate(details)) {
+    const identityMatches = await store.findMatches(buildResolutionLookup({ workspaceId, candidate: details, verification: null }));
+    if (identityMatches.some((match) => match.matchedBy === "source_ref")) {
+      const decision = decideResolution({ candidate: details, matches: identityMatches });
+      if (decision.resolution === "matched" || decision.resolution === "ambiguous") {
+        enrichment = "skipped";
+        await recordDecision(details, decision, null);
+        return { status: "completed" };
+      }
     }
   }
 
-  context.logger.info("candidate.resolved", { candidateId: candidate.id, resolution: decision.resolution, websiteState: verification.state });
+  // Stage 2: enrich the survivor exactly once, then verify and match with the full identifier set.
+  if (!isEnrichedCandidate(details)) {
+    const enriched = await fetchDetails();
+    enrichment = "fetched";
+    if (!enriched) return rejectUnavailable();
+    details = enriched;
+    await storeDetails(enriched);
+  }
+
+  const verification = await verifyCandidateWebsite(details, probe, observedAt);
+  const lookup = buildResolutionLookup({ workspaceId, candidate: details, verification });
+  const matches = await store.findMatches(lookup);
+  await recordDecision(details, decideResolution({ candidate: details, matches }), verification);
   return { status: "completed" };
 }
 

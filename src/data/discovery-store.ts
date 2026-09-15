@@ -295,10 +295,12 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
       const { candidate, details, prospectId, verification, now } = input;
       await upsertSourceRef({ workspaceId: candidate.workspace_id, prospectId, provider: details.provider, externalId: details.providerRef, now });
 
-      const prospect = await client.from("prospects").select("website_state").eq("id", prospectId).single();
-      if (prospect.error) throw new Error(`Unable to load matched prospect: ${prospect.error.message}`);
-      const upgrade = prospect.data.website_state === "unknown" || (verification.state === "verified_website" && prospect.data.website_state !== "verified_website");
-      if (upgrade) await recordVerification({ workspaceId: candidate.workspace_id, prospectId, candidateId: candidate.id, verification, now });
+      if (verification) {
+        const prospect = await client.from("prospects").select("website_state").eq("id", prospectId).single();
+        if (prospect.error) throw new Error(`Unable to load matched prospect: ${prospect.error.message}`);
+        const upgrade = prospect.data.website_state === "unknown" || (verification.state === "verified_website" && prospect.data.website_state !== "verified_website");
+        if (upgrade) await recordVerification({ workspaceId: candidate.workspace_id, prospectId, candidateId: candidate.id, verification, now });
+      }
 
       await this.recordActivity({
         workspaceId: candidate.workspace_id,
@@ -306,7 +308,7 @@ export function createSupabaseDiscoveryStore(client: DbClient): DiscoveryStore {
         prospectId,
         eventType: "prospect.candidate_matched",
         summary: `Discovery candidate matched this prospect by ${input.matchedIdentifiers.join(", ").replace(/_/g, " ")}.`,
-        metadata: { candidateId: candidate.id, websiteState: verification.state },
+        metadata: { candidateId: candidate.id, websiteState: verification?.state ?? null },
         idempotencyKey: `prospect.candidate_matched:${candidate.id}`,
       });
     },

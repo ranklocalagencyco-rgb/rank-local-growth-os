@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscoveryProviderError } from "@/discovery/provider";
-import { buildTextQuery, GooglePlacesDiscoveryProvider, mapGooglePlaceToCandidate, PLACE_DETAILS_FIELD_MASK, TEXT_SEARCH_FIELD_MASK, type GooglePlace } from "@/discovery/providers/google-places";
+import { buildTextQuery, DISCOVERY_PLACE_FIELDS, ENRICHMENT_PLACE_FIELDS, GooglePlacesDiscoveryProvider, mapGooglePlaceToCandidate, PLACE_DETAILS_FIELD_MASK, TEXT_SEARCH_FIELD_MASK, TEXT_SEARCH_INLINE_FIELD_MASK, type GooglePlace } from "@/discovery/providers/google-places";
 import { getDiscoveryProviderReadiness } from "@/discovery/providers/registry";
 
 const place: GooglePlace = {
@@ -28,8 +28,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("Google Places mapping", () => {
-  it("maps a place into the provider-neutral candidate shape", () => {
-    const candidate = mapGooglePlaceToCandidate(place, "2026-09-14T10:00:00.000Z");
+  it("maps an enriched place into the provider-neutral candidate shape", () => {
+    const candidate = mapGooglePlaceToCandidate(place, "2026-09-14T10:00:00.000Z", "enrichment");
     expect(candidate).toMatchObject({
       provider: "google_places",
       providerRef: "ChIJabc123",
@@ -45,14 +45,24 @@ describe("Google Places mapping", () => {
       businessStatus: "operational",
       attribution: "Google",
       observedAt: "2026-09-14T10:00:00.000Z",
+      enrichedAt: "2026-09-14T10:00:00.000Z",
     });
+  });
+
+  it("maps a Stage 1 place with contact fields unknown, never absent, and no enrichment stamp", () => {
+    const { websiteUri: _website, nationalPhoneNumber: _national, internationalPhoneNumber: _international, ...stageOne } = place;
+    void _website; void _national; void _international;
+    const candidate = mapGooglePlaceToCandidate(stageOne, "2026-09-14T10:00:00.000Z", "discovery");
+    expect(candidate).toMatchObject({ providerRef: "ChIJabc123", displayName: "A&B Roofing Ltd", locality: "Uxbridge", primaryCategory: "roofing contractor", businessStatus: "operational", websiteHint: null, websiteHintState: "unknown", phoneHint: null, enrichedAt: null });
+    // Even if a Stage 1 payload unexpectedly carried contact fields, they are not trusted as enrichment.
+    expect(mapGooglePlaceToCandidate(place, "t", "discovery")).toMatchObject({ websiteHint: null, websiteHintState: "unknown", phoneHint: null, enrichedAt: null });
   });
 
   it("marks the website hint absent when the provider returns none, and drops places without an id", () => {
     const { websiteUri: _omitted, ...withoutWebsite } = place;
     void _omitted;
-    expect(mapGooglePlaceToCandidate({ ...withoutWebsite, businessStatus: "CLOSED_PERMANENTLY" }, "t")).toMatchObject({ websiteHint: null, websiteHintState: "absent", businessStatus: "closed_permanently" });
-    expect(mapGooglePlaceToCandidate({ displayName: { text: "No id" } }, "t")).toBeNull();
+    expect(mapGooglePlaceToCandidate({ ...withoutWebsite, businessStatus: "CLOSED_PERMANENTLY" }, "t", "enrichment")).toMatchObject({ websiteHint: null, websiteHintState: "absent", businessStatus: "closed_permanently" });
+    expect(mapGooglePlaceToCandidate({ displayName: { text: "No id" } }, "t", "enrichment")).toBeNull();
   });
 
   it("builds the text query from the campaign category and location", () => {
@@ -61,14 +71,34 @@ describe("Google Places mapping", () => {
 });
 
 describe("Google Places adapter", () => {
-  it("sends the key in a header with an explicit field mask and pages through results", async () => {
+  const stageOnePlace: GooglePlace = { id: place.id, displayName: place.displayName, formattedAddress: place.formattedAddress, addressComponents: place.addressComponents, primaryType: place.primaryType, types: place.types, businessStatus: place.businessStatus };
+
+  it("documents the exact field mask for each stage", () => {
+    expect(DISCOVERY_PLACE_FIELDS).toEqual(["id", "displayName", "formattedAddress", "addressComponents", "primaryType", "types", "businessStatus"]);
+    expect(TEXT_SEARCH_FIELD_MASK).toBe("places.id,places.displayName,places.formattedAddress,places.addressComponents,places.primaryType,places.types,places.businessStatus,nextPageToken");
+    expect(ENRICHMENT_PLACE_FIELDS).toEqual([...DISCOVERY_PLACE_FIELDS, "websiteUri", "nationalPhoneNumber", "internationalPhoneNumber"]);
+    expect(PLACE_DETAILS_FIELD_MASK).toBe("id,displayName,formattedAddress,addressComponents,primaryType,types,businessStatus,websiteUri,nationalPhoneNumber,internationalPhoneNumber");
+    expect(TEXT_SEARCH_INLINE_FIELD_MASK).toBe("places.id,places.displayName,places.formattedAddress,places.addressComponents,places.primaryType,places.types,places.businessStatus,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber,nextPageToken");
+  });
+
+  it("Stage 1 search never requests website, phone, rating or review fields", () => {
+    for (const expensive of ["websiteUri", "nationalPhoneNumber", "internationalPhoneNumber", "rating", "userRatingCount", "reviews", "regularOpeningHours", "priceLevel"]) {
+      expect(TEXT_SEARCH_FIELD_MASK).not.toContain(expensive);
+    }
+    expect(PLACE_DETAILS_FIELD_MASK).not.toContain("rating");
+    expect(PLACE_DETAILS_FIELD_MASK).not.toContain("reviews");
+  });
+
+  it("Stage 1: sends the key in a header with the minimal field mask, pages through results and returns unenriched candidates", async () => {
     const fetchImpl = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ places: [place], nextPageToken: "page-2" }))
-      .mockResolvedValueOnce(jsonResponse({ places: [{ ...place, id: "ChIJdef456" }] }));
+      .mockResolvedValueOnce(jsonResponse({ places: [stageOnePlace], nextPageToken: "page-2" }))
+      .mockResolvedValueOnce(jsonResponse({ places: [{ ...stageOnePlace, id: "ChIJdef456" }] }));
     const provider = new GooglePlacesDiscoveryProvider({ apiKey: "secret-key", fetchImpl, now: () => new Date("2026-09-14T10:00:00.000Z") });
+    expect(provider.searchProfile).toBe("minimal");
 
     const first = await provider.searchCandidates({ category: "roofer", location: "Uxbridge", countryCode: "GB" });
     expect(first.candidates.map((candidate) => candidate.providerRef)).toEqual(["ChIJabc123"]);
+    expect(first.candidates[0]).toMatchObject({ displayName: "A&B Roofing Ltd", websiteHint: null, websiteHintState: "unknown", phoneHint: null, enrichedAt: null });
     expect(first.nextPageToken).toBe("page-2");
     expect(first.requestCount).toBe(1);
 
@@ -78,24 +108,34 @@ describe("Google Places adapter", () => {
     const headers = init?.headers as Record<string, string>;
     expect(headers["X-Goog-Api-Key"]).toBe("secret-key");
     expect(headers["X-Goog-FieldMask"]).toBe(TEXT_SEARCH_FIELD_MASK);
-    expect(TEXT_SEARCH_FIELD_MASK).toContain("places.websiteUri");
-    expect(TEXT_SEARCH_FIELD_MASK).toContain("nextPageToken");
     expect(JSON.parse(String(init?.body))).toMatchObject({ textQuery: "roofer in Uxbridge", regionCode: "GB", pageSize: 20 });
 
     const second = await provider.searchCandidates({ category: "roofer", location: "Uxbridge", countryCode: "GB", pageToken: "page-2" });
     expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toMatchObject({ pageToken: "page-2" });
     expect(second.nextPageToken).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const call of fetchImpl.mock.calls) expect(String(call[0])).toContain("places:searchText");
   });
 
-  it("fetches reference details with the details field mask and returns null for unknown references", async () => {
+  it("Stage 2: fetches one candidate with the enrichment field mask and returns null for unknown references", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(place)).mockResolvedValueOnce(jsonResponse({ error: { message: "not found" } }, 404));
-    const provider = new GooglePlacesDiscoveryProvider({ apiKey: "secret-key", fetchImpl });
+    const provider = new GooglePlacesDiscoveryProvider({ apiKey: "secret-key", fetchImpl, now: () => new Date("2026-09-14T11:00:00.000Z") });
 
     const details = await provider.getReferenceDetails("ChIJabc123");
-    expect(details?.displayName).toBe("A&B Roofing Ltd");
+    expect(details).toMatchObject({ displayName: "A&B Roofing Ltd", websiteHint: "https://www.abroofing.co.uk/", websiteHintState: "present", phoneHint: "+44 1895 123456", enrichedAt: "2026-09-14T11:00:00.000Z" });
     expect(String(fetchImpl.mock.calls[0][0])).toBe("https://places.googleapis.com/v1/places/ChIJabc123");
+    expect(fetchImpl.mock.calls[0][1]?.method).toBe("GET");
     expect((fetchImpl.mock.calls[0][1]?.headers as Record<string, string>)["X-Goog-FieldMask"]).toBe(PLACE_DETAILS_FIELD_MASK);
     expect(await provider.getReferenceDetails("missing")).toBeNull();
+  });
+
+  it("inline profile requests the enrichment fields during search so candidates arrive already enriched", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({ places: [place] }));
+    const provider = new GooglePlacesDiscoveryProvider({ apiKey: "secret-key", fetchImpl, searchProfile: "inline", now: () => new Date("2026-09-14T10:00:00.000Z") });
+
+    const result = await provider.searchCandidates({ category: "roofer", location: "Uxbridge", countryCode: "GB" });
+    expect((fetchImpl.mock.calls[0][1]?.headers as Record<string, string>)["X-Goog-FieldMask"]).toBe(TEXT_SEARCH_INLINE_FIELD_MASK);
+    expect(result.candidates[0]).toMatchObject({ websiteHintState: "present", phoneHint: "+44 1895 123456", enrichedAt: "2026-09-14T10:00:00.000Z" });
   });
 
   it("classifies provider failures without leaking the key", async () => {

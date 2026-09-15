@@ -36,14 +36,15 @@ const IDENTIFIER_CONFIDENCE: Record<MatchIdentifier, number> = {
   name_locality: 0.4,
 };
 
-export function buildResolutionLookup(input: { workspaceId: string; candidate: DiscoveryCandidateInput; verification: WebsiteVerification }): ResolutionLookup {
+/** `verification` is null before enrichment: only the source reference, phone (if known) and name/locality can match. */
+export function buildResolutionLookup(input: { workspaceId: string; candidate: DiscoveryCandidateInput; verification: WebsiteVerification | null }): ResolutionLookup {
   const { workspaceId, candidate, verification } = input;
   return {
     workspaceId,
     provider: candidate.provider,
     providerRef: candidate.providerRef,
     // Only a verified official domain is a trustworthy identity key.
-    canonicalDomain: verification.state === "verified_website" ? verification.canonicalDomain : null,
+    canonicalDomain: verification?.state === "verified_website" ? verification.canonicalDomain : null,
     normalizedPhone: normalizePhone(candidate.phoneHint, candidate.countryCode ?? "GB"),
     normalizedName: normalizeBusinessName(candidate.displayName ?? ""),
     locality: normalizeLocality(candidate.locality),
@@ -113,7 +114,7 @@ export function buildNewProspectRecord(input: { workspaceId: string; candidate: 
     workspaceId,
     displayName: candidate.displayName?.trim() ?? "",
     normalizedName: lookup.normalizedName,
-    canonicalDomain: verification.state === "verified_website" ? verification.canonicalDomain : null,
+    canonicalDomain: verification?.state === "verified_website" ? verification.canonicalDomain : null,
     primaryPhone: lookup.normalizedPhone,
     countryCode: candidate.countryCode ?? defaultCountryCode,
     region: candidate.region,

@@ -22,6 +22,7 @@ function candidate(overrides: Partial<DiscoveryCandidateInput>): DiscoveryCandid
     businessStatus: "operational",
     attribution: "Google",
     observedAt: "2026-09-14T10:00:00.000Z",
+    enrichedAt: null,
     ...overrides,
   };
 }

@@ -31,8 +31,27 @@ function input(overrides: Partial<DiscoveryCandidateInput> = {}): DiscoveryCandi
     businessStatus: "operational",
     attribution: "Google",
     observedAt: at,
+    enrichedAt: at,
     ...overrides,
   };
+}
+
+/** A candidate exactly as Stage 1 discovery stores it: identity only, contact fields not yet requested. */
+function stageOne(overrides: Partial<DiscoveryCandidateInput> = {}): DiscoveryCandidateInput {
+  return input({ websiteHint: null, websiteHintState: "unknown", phoneHint: null, enrichedAt: null, ...overrides });
+}
+
+/** Provider fake that counts Stage 2 calls and answers each reference with enriched details. */
+function enrichingProvider(answer: (ref: string) => DiscoveryCandidateInput | null = (ref) => input({ providerRef: ref })): DiscoveryProvider & { detailCalls: string[]; searchCalls: number } {
+  const fake = {
+    name: "google_places" as const,
+    retention: { referenceRetention: "indefinite" as const, contentRetention: "expiring" as const, attributionRequired: true, attributionText: "Google" },
+    detailCalls: [] as string[],
+    searchCalls: 0,
+    async searchCandidates(): Promise<DiscoverySearchResult> { fake.searchCalls += 1; throw new Error("search must not run during resolution"); },
+    async getReferenceDetails(ref: string) { fake.detailCalls.push(ref); return answer(ref); },
+  };
+  return fake;
 }
 
 function verified(overrides: Partial<WebsiteVerification> = {}): WebsiteVerification {
@@ -254,16 +273,16 @@ describe("candidate resolution job", () => {
     expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ reason: "closed_permanently" });
   });
 
-  it("re-fetches provider details when the stored content has been purged", async () => {
+  it("re-fetches provider details with a single Stage 2 call when the stored content has been purged", async () => {
     const store = new MemoryStore();
     const candidate = store.seedCandidate(input(), { candidate_summary_json: {}, candidate_name: null, content_purged_at: at });
-    let detailCalls = 0;
-    const provider: DiscoveryProvider = { name: "google_places", retention: { referenceRetention: "indefinite", contentRetention: "expiring", attributionRequired: true, attributionText: "Google" }, async searchCandidates() { throw new Error("unused"); }, async getReferenceDetails(ref) { detailCalls += 1; return input({ providerRef: ref }); } };
+    const provider = enrichingProvider();
 
     await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
 
-    expect(detailCalls).toBe(1);
+    expect(provider.detailCalls).toEqual(["place-1"]);
     expect(store.created).toHaveLength(1);
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ enrichment: "fetched" });
   });
 
   it("builds website signals from the provider hint and probe", async () => {
@@ -272,31 +291,148 @@ describe("candidate resolution job", () => {
   });
 });
 
+describe("two-stage enrichment", () => {
+  it("enriches a Stage 1 candidate exactly once, stores the enriched content, then verifies and creates the prospect", async () => {
+    const store = new MemoryStore();
+    const candidate = store.seedCandidate(stageOne());
+    const provider = enrichingProvider();
+
+    const outcome = await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(outcome).toEqual({ status: "completed" });
+    expect(provider.detailCalls).toEqual(["place-1"]);
+    expect(provider.searchCalls).toBe(0);
+    expect(store.candidates.get(candidate.id)!.candidate_summary_json).toMatchObject({ websiteHint: "https://www.abroofing.co.uk/", websiteHintState: "present", phoneHint: "01895 123456", enrichedAt: at });
+    expect(store.created).toHaveLength(1);
+    expect(store.created[0].record).toMatchObject({ canonicalDomain: "abroofing.co.uk", primaryPhone: "+441895123456", websiteState: "verified_website" });
+    expect(store.created[0].verification.signals.map((signal) => `${signal.source}:${signal.kind}`)).toEqual(["discovery_provider:website_url_present", "http_probe:reachable"]);
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ enrichment: "fetched", websiteState: "verified_website" });
+  });
+
+  it("never treats a Stage 1 'unknown' website hint as evidence of no website", async () => {
+    const verification = await verifyCandidateWebsite(stageOne(), reachable, at);
+    expect(verification.signals).toEqual([]);
+    expect(verification.state).toBe("unverified");
+    expect(verification.reasons).toEqual(["no_signals"]);
+  });
+
+  it("makes no enrichment call for candidates rejected on Stage 1 data", async () => {
+    const store = new MemoryStore();
+    const closed = store.seedCandidate(stageOne({ providerRef: "closed", businessStatus: "closed_permanently" }));
+    const nameless = store.seedCandidate(stageOne({ providerRef: "nameless", displayName: null }));
+    const provider = enrichingProvider();
+
+    await resolveCandidate({ candidateId: closed.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+    await resolveCandidate({ candidateId: nameless.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(provider.detailCalls).toEqual([]);
+    expect(store.candidates.get(closed.id)).toMatchObject({ resolution_status: "rejected" });
+    expect(store.candidates.get(closed.id)!.resolution_notes_json).toMatchObject({ reason: "closed_permanently", enrichment: "skipped" });
+    expect(store.candidates.get(nameless.id)!.resolution_notes_json).toMatchObject({ reason: "missing_business_name", enrichment: "skipped" });
+  });
+
+  it("attaches a place already linked to a prospect by source reference without an enrichment call", async () => {
+    const store = new MemoryStore();
+    store.prospects.push({ id: "existing", domain: "abroofing.co.uk", phone: "+441895123456", name: "a b roofing ltd", city: "Uxbridge", websiteState: "verified_website" });
+    store.sourceRefs.push({ prospectId: "existing", provider: "google_places", externalId: "place-1" });
+    const candidate = store.seedCandidate(stageOne());
+    const provider = enrichingProvider();
+
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(provider.detailCalls).toEqual([]);
+    expect(store.created).toHaveLength(0);
+    expect(store.attached).toHaveLength(1);
+    expect(store.attached[0].verification).toBeNull();
+    expect(store.attached[0].matchedIdentifiers).toEqual(["source_ref"]);
+    expect(store.candidates.get(candidate.id)).toMatchObject({ resolution_status: "matched", resolved_prospect_id: "existing", resolution_confidence: 0.99 });
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ enrichment: "skipped", websiteState: null });
+  });
+
+  it("still enriches when only a weak name-and-locality match exists, then flags for review", async () => {
+    const store = new MemoryStore();
+    store.prospects.push({ id: "lookalike", domain: "other-roofers.co.uk", phone: "+441895999999", name: "a b roofing ltd", city: "Uxbridge", websiteState: "verified_website" });
+    const candidate = store.seedCandidate(stageOne({ providerRef: "place-2" }));
+    const provider = enrichingProvider((ref) => input({ providerRef: ref, websiteHint: null, websiteHintState: "absent", phoneHint: null }));
+
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(provider.detailCalls).toEqual(["place-2"]);
+    expect(store.candidates.get(candidate.id)).toMatchObject({ resolution_status: "ambiguous" });
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ candidateProspectIds: ["lookalike"], websiteState: "likely_no_website", enrichment: "fetched" });
+  });
+
+  it("does not re-enrich on retry once enriched content is stored", async () => {
+    const store = new MemoryStore();
+    const candidate = store.seedCandidate(input());
+    const provider = enrichingProvider();
+
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(provider.detailCalls).toEqual([]);
+    expect(store.created).toHaveLength(1);
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ enrichment: "stored" });
+  });
+
+  it("rejects a Stage 1 candidate whose reference has disappeared by enrichment time", async () => {
+    const store = new MemoryStore();
+    const candidate = store.seedCandidate(stageOne());
+    const provider = enrichingProvider(() => null);
+
+    await resolveCandidate({ candidateId: candidate.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config });
+
+    expect(provider.detailCalls).toEqual(["place-1"]);
+    expect(store.created).toHaveLength(0);
+    expect(store.candidates.get(candidate.id)).toMatchObject({ resolution_status: "rejected" });
+    expect(store.candidates.get(candidate.id)!.resolution_notes_json).toMatchObject({ reason: "reference_no_longer_available" });
+  });
+
+  it("returns the candidate to the queue when enrichment fails transiently and fails it when the provider rejects the key", async () => {
+    const { DiscoveryProviderError } = await import("@/discovery/provider");
+    const store = new MemoryStore();
+    const transient = store.seedCandidate(stageOne({ providerRef: "transient" }));
+    const fatal = store.seedCandidate(stageOne({ providerRef: "fatal" }));
+    const provider = enrichingProvider((ref) => { throw new DiscoveryProviderError(ref === "fatal" ? "bad key" : "quota", ref === "fatal" ? "auth" : "quota", ref !== "fatal"); });
+
+    await expect(resolveCandidate({ candidateId: transient.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config })).rejects.toMatchObject({ code: "quota" });
+    expect(store.candidates.get(transient.id)).toMatchObject({ status: "new", resolution_status: "pending" });
+
+    await expect(resolveCandidate({ candidateId: fatal.id, campaignId }, context(), { store, getProvider: () => provider, probe: reachable, config })).rejects.toMatchObject({ name: "NonRetryableJobError" });
+    expect(store.candidates.get(fatal.id)).toMatchObject({ status: "failed", resolution_status: "failed" });
+    expect(provider.detailCalls).toEqual(["transient", "fatal"]);
+  });
+});
+
 describe("discovery run job", () => {
-  function fakeProvider(pages: Record<string, DiscoverySearchResult>): DiscoveryProvider & { queries: DiscoverySearchQuery[] } {
+  function fakeProvider(pages: Record<string, DiscoverySearchResult>): DiscoveryProvider & { queries: DiscoverySearchQuery[]; detailCalls: number } {
     const queries: DiscoverySearchQuery[] = [];
-    return {
-      name: "google_places",
-      retention: { referenceRetention: "indefinite", contentRetention: "expiring", attributionRequired: true, attributionText: "Google" },
+    const fake = {
+      name: "google_places" as const,
+      retention: { referenceRetention: "indefinite" as const, contentRetention: "expiring" as const, attributionRequired: true, attributionText: "Google" },
       queries,
-      async searchCandidates(query) { queries.push(query); return pages[`${query.category}|${query.location}|${query.pageToken ?? ""}`] ?? { candidates: [], nextPageToken: null, requestCount: 1 }; },
-      async getReferenceDetails() { return null; },
+      detailCalls: 0,
+      async searchCandidates(query: DiscoverySearchQuery) { queries.push(query); return pages[`${query.category}|${query.location}|${query.pageToken ?? ""}`] ?? { candidates: [], nextPageToken: null, requestCount: 1 }; },
+      async getReferenceDetails() { fake.detailCalls += 1; return null; },
     };
+    return fake;
   }
 
   it("searches every unit, pages, dedupes across pages, enqueues one resolve job per candidate and completes", async () => {
     const store = new MemoryStore({ target_categories: ["roofer"], target_locations: ["Uxbridge", "Hayes"] });
     const provider = fakeProvider({
-      "roofer|Uxbridge|": { candidates: [input({ providerRef: "p1" }), input({ providerRef: "p2" }), input({ providerRef: "p2" })], nextPageToken: "next", requestCount: 1 },
-      "roofer|Uxbridge|next": { candidates: [input({ providerRef: "p1" }), input({ providerRef: "p3" })], nextPageToken: null, requestCount: 1 },
-      "roofer|Hayes|": { candidates: [input({ providerRef: "p3" }), input({ providerRef: "p4" })], nextPageToken: null, requestCount: 1 },
+      "roofer|Uxbridge|": { candidates: [stageOne({ providerRef: "p1" }), stageOne({ providerRef: "p2" }), stageOne({ providerRef: "p2" })], nextPageToken: "next", requestCount: 1 },
+      "roofer|Uxbridge|next": { candidates: [stageOne({ providerRef: "p1" }), stageOne({ providerRef: "p3" })], nextPageToken: null, requestCount: 1 },
+      "roofer|Hayes|": { candidates: [stageOne({ providerRef: "p3" }), stageOne({ providerRef: "p4" })], nextPageToken: null, requestCount: 1 },
     });
 
     const outcome = await runDiscovery({ campaignRunId: runId, campaignId }, context(), { store, getProvider: () => provider, config });
 
     expect(outcome).toEqual({ status: "completed" });
     expect(provider.queries.map((query) => query.pageToken ?? null)).toEqual([null, "next", null]);
+    expect(provider.detailCalls).toBe(0);
     expect([...store.candidates.values()].map((row) => row.provider_ref).sort()).toEqual(["p1", "p2", "p3", "p4"]);
+    expect([...store.candidates.values()].every((row) => row.candidate_website_state === "unknown" && (row.candidate_summary_json as { enrichedAt: unknown }).enrichedAt === null)).toBe(true);
     expect(store.jobs.filter((job) => job.type === CANDIDATE_RESOLVE_JOB)).toHaveLength(4);
     expect(store.run).toMatchObject({ status: "completed", candidates_seen: 4, provider_requests: 3, search_units_total: 2, search_units_completed: 2 });
     expect(store.events.filter((key) => key.startsWith("candidate.discovered:"))).toHaveLength(4);

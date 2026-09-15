@@ -15,6 +15,8 @@ const runtimeConfigSchema = z.object({
   discoveryCandidateTtlHours: z.coerce.number().int().positive().max(24 * 30).default(24),
   discoveryMaxPagesPerQuery: z.coerce.number().int().positive().max(3).default(2),
   discoveryDefaultCandidateCap: z.coerce.number().int().positive().max(1000).default(60),
+  /** two_stage: cheap search + per-candidate enrichment (default). inline: contact fields fetched during search, no enrichment calls. */
+  discoveryEnrichmentMode: z.enum(["two_stage", "inline"]).default("two_stage"),
 });
 
 function optionalEnvironmentValue(value: string | undefined): string | undefined {
@@ -39,6 +41,7 @@ export function parseRuntimeConfig(environment: NodeJS.ProcessEnv = process.env)
     discoveryCandidateTtlHours: optionalEnvironmentValue(environment.DISCOVERY_CANDIDATE_TTL_HOURS),
     discoveryMaxPagesPerQuery: optionalEnvironmentValue(environment.DISCOVERY_MAX_PAGES_PER_QUERY),
     discoveryDefaultCandidateCap: optionalEnvironmentValue(environment.DISCOVERY_DEFAULT_CANDIDATE_CAP),
+    discoveryEnrichmentMode: optionalEnvironmentValue(environment.DISCOVERY_ENRICHMENT_MODE),
   });
 }
 

@@ -51,7 +51,8 @@ export type AttachProspectInput = {
   candidate: DiscoveryCandidate;
   details: DiscoveryCandidateInput;
   prospectId: string;
-  verification: WebsiteVerification;
+  /** Null when the candidate matched by source reference before enrichment, so no website check was run. */
+  verification: WebsiteVerification | null;
   matchedIdentifiers: string[];
   now: string;
 };
