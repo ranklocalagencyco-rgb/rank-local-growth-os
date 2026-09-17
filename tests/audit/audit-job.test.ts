@@ -264,4 +264,21 @@ describe("website audit job", () => {
     expect(codes).toContain("missing_h1"); // /blog/post-1 is sparse server HTML, still judged
     expect(store.findings.filter((finding) => finding.code === "missing_h1").map((finding) => (finding.evidence as { path: string }).path)).not.toContain("/book");
   });
+
+  it("never refetches the homepage when the sitemap or a page links back to it", async () => {
+    const store = new MemoryAuditStore();
+    const fetchImpl = site({
+      ...roofingSite,
+      "https://example.co.uk/": { body: html("Home", '<a href="/">Home</a><a href="/services/roofing">Roofing</a><a href="/contact">Contact</a>') },
+      "https://example.co.uk/sitemap.xml": { headers: { "content-type": "application/xml" }, body: "<urlset><url><loc>https://example.co.uk/</loc></url><url><loc>https://example.co.uk/areas/uxbridge</loc></url></urlset>" },
+      "https://example.co.uk/services/roofing": { body: html("Roofing", '<p>We do roofs</p><a href="https://example.co.uk/?utm_source=nav">Back home</a>') },
+    });
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
+    expect(store.run.status).toBe("completed");
+    expect(fetchImpl.calls.filter((url) => url === "https://example.co.uk/")).toHaveLength(1);
+    expect(store.pages.filter((page) => page.path === "/")).toHaveLength(1);
+    expect(store.run.pages_attempted).toBe(store.pages.length);
+    expect(store.run.pages_succeeded + store.run.pages_failed).toBe(store.pages.length);
+    expect(store.run.crawl_state_json).toMatchObject({ visited: expect.arrayContaining(["example.co.uk/"]) });
+  });
 });

@@ -4,6 +4,7 @@ import { buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState,
 import { AUDIT_CRAWLER_VERSION } from "@/audit/extract";
 import { AUDIT_RULES_VERSION, pageFindings, siteFindings, type FindingInput } from "@/audit/findings";
 import type { SafeFetcher, SafeFetchReason, SafeFetchResult } from "@/audit/safe-fetch";
+import { normalizeAuditUrl } from "@/audit/url";
 import type { AuditFindingInsert, AuditProspect, AuditStore } from "@/audit/store";
 import type { RuntimeConfig } from "@/config/env";
 import type { WebsiteAuditRun } from "@/db/types";
@@ -147,6 +148,11 @@ async function startCrawl(run: WebsiteAuditRun, state: CrawlState, fetcher: Safe
   if (!siteDomain || !origin) return { kind: "fail", message: "Homepage URL has no usable public domain." };
 
   Object.assign(state, initialCrawlState(), { phase: "start", siteDomain });
+  // The homepage is crawled here, outside the frontier. Record its keys so a sitemap or link back to it is never fetched twice.
+  for (const url of [run.website_url, result.finalUrl]) {
+    const key = url ? normalizeAuditUrl(url)?.key : undefined;
+    if (key && !state.visited.includes(key)) state.visited.push(key);
+  }
   state.summary = { homepageUrl: run.website_url, homepageFinalUrl: result.finalUrl, homepageStatus: result.status, homepageRedirectChain: result.redirectChain };
 
   const workspaceId = context.job.workspace_id;
