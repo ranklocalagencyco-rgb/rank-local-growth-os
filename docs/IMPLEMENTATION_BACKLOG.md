@@ -179,7 +179,9 @@ Acceptance:
 ## RL-071 Score versioning
 - implemented for the audit score: `scoring_version` on immutable `website_audit_scores` rows, unique per (audit run, version).
 ## RL-072 Score explanation UI
-- minimal internal panel on the prospect page (overall, status, categories, mobile/desktop performance, field-data availability, coverage, version). The per-rule explanation view and any client-facing report are not built.
+- minimal internal panel on the prospect page (overall, status, categories, mobile/desktop performance, field-data availability, coverage, version). The per-rule explanation view is part of the client report (RL-072a).
+## RL-072a Client-facing website audit report
+- implemented: `/audits/[auditRunId]/report`, a server-rendered, printable report built only from stored evidence (run, pages, findings, performance observations, score breakdown) through a pure model (`src/report/model.ts`) and static label maps (`src/report/labels.ts`); score-state handling (complete / provisional / insufficient / pending), blocked-audit state, historical-version notice, A4 print stylesheet, "View client report" on the prospect page. No LLM, no recommendations, no migration, no public access. Spec: `docs/AUDIT_REPORT.md`.
 ## RL-073 Offer catalogue
 ## RL-074 Rank Local Brain schema
 ## RL-075 Brain editor
@@ -299,6 +301,8 @@ At this point V1 has a complete lead-to-meeting loop.
 
 # EPIC 10 — Public Audit Pages (V1.1)
 
+## RL-196 Report authentication and sharing hardening (prerequisite for any external sharing, not started)
+- the audit report route is internal and the application has no hard production login gate (middleware refreshes the session without blocking; the workspace comes from the local session stub). Before a report URL may be given to anyone outside Rank Local: enforce authenticated access and workspace membership on `/audits/**` and the rest of the app, then build sharing only through RL-190–195 (opaque token, expiry/revoke, public renderer with privacy defaults). `noindex` is not access control. Until then reports leave the company as PDFs only.
 ## RL-190 Opaque share token
 ## RL-191 Expiry/revoke
 ## RL-192 Public audit renderer

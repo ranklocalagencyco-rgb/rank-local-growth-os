@@ -1,0 +1,158 @@
+/* Client-facing website audit report. Scoped to .audit-report (classes prefixed ar-). Neutral document styling with one restrained
+   brand accent (--green from globals.css). Print rules at the end: A4, no app chrome, no split cards. docs/AUDIT_REPORT.md */
+
+/* The report is a standalone document: the internal app navigation is hidden on this route, on screen and in print. */
+body:has(.audit-report) .site-header { display: none; }
+body:has(.audit-report) { background: #eef0ee; }
+
+.audit-report { --ar-ink: #111614; --ar-muted: #5d6762; --ar-line: #dfe3e0; --ar-soft: #f5f6f5; --ar-accent: var(--green, #246b4a); --ar-warn: #8a5a00; --ar-warn-soft: #fdf4e2; --ar-bad: #9b2c21; color: var(--ar-ink); padding: 24px 16px 64px; font-size: 15px; line-height: 1.55; }
+.audit-report h1, .audit-report h2, .audit-report h3, .audit-report h4 { font-family: "Space Grotesk", "DM Sans", system-ui, sans-serif; color: var(--ar-ink); margin: 0; letter-spacing: -0.01em; }
+.audit-report p { margin: 0; }
+.audit-report ul { margin: 0; padding: 0; list-style: none; }
+
+.ar-toolbar { max-width: 880px; margin: 0 auto 14px; display: flex; align-items: center; gap: 16px; font-size: 13px; }
+.ar-back { color: var(--ar-muted); text-decoration: none; }
+.ar-back:hover { color: var(--ar-ink); }
+.ar-toolbar-note { margin-left: auto; color: var(--ar-muted); }
+.ar-button { font: inherit; font-size: 13px; font-weight: 600; padding: 8px 14px; border: 1px solid var(--ar-ink); border-radius: 6px; background: var(--ar-ink); color: #fff; cursor: pointer; }
+.ar-button:hover { background: #2a332f; }
+
+.ar-document { max-width: 880px; margin: 0 auto; background: #fff; border: 1px solid var(--ar-line); border-radius: 10px; padding: 48px 56px 40px; }
+
+.ar-brand { display: flex; align-items: center; gap: 10px; font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.01em; padding-bottom: 20px; border-bottom: 1px solid var(--ar-line); }
+.ar-brand-mark { width: 10px; height: 10px; border-radius: 2px; background: var(--ar-accent); display: inline-block; }
+.ar-brand-sub { margin-left: auto; font-family: "DM Sans", system-ui, sans-serif; font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ar-muted); }
+.ar-header-main { display: flex; justify-content: space-between; align-items: flex-end; gap: 32px; padding: 28px 0 28px; }
+.ar-title h1 { font-size: 32px; line-height: 1.15; }
+.ar-domain { font-size: 16px; color: var(--ar-muted); margin-top: 6px !important; }
+.ar-meta { font-size: 13px; color: var(--ar-muted); margin-top: 2px !important; }
+.ar-overall { text-align: right; flex-shrink: 0; }
+.ar-overall-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ar-muted); }
+.ar-overall-value { font-family: "Space Grotesk", system-ui, sans-serif; font-size: 34px; font-weight: 700; line-height: 1.15; margin: 2px 0 8px; white-space: nowrap; }
+.ar-chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--ar-line); color: var(--ar-muted); }
+.ar-tone-good .ar-chip { color: var(--ar-accent); border-color: var(--ar-accent); }
+.ar-tone-warn .ar-chip { color: var(--ar-warn); border-color: #e2c98f; background: var(--ar-warn-soft); }
+.ar-tone-warn .ar-overall-value, .ar-tone-neutral .ar-overall-value { font-size: 26px; }
+
+.ar-coverage, .ar-blocked, .ar-notice { border: 1px solid var(--ar-line); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+.ar-coverage-head { display: flex; justify-content: space-between; align-items: baseline; }
+.ar-coverage-head h2 { font-size: 15px; }
+.ar-coverage-value { font-family: "Space Grotesk", system-ui, sans-serif; font-size: 20px; font-weight: 700; }
+.ar-coverage-sentence { margin-top: 10px !important; font-weight: 500; }
+.ar-state-provisional, .ar-state-insufficient, .ar-state-blocked, .ar-state-unscored { background: var(--ar-warn-soft); border-color: #e2c98f; }
+.ar-notice { background: var(--ar-soft); font-size: 14px; }
+.ar-blocked { border-color: #e2c98f; background: var(--ar-warn-soft); }
+.ar-blocked h2 { font-size: 20px; margin-bottom: 6px; }
+
+.ar-bar { height: 6px; border-radius: 3px; background: #e6e9e7; margin-top: 10px; overflow: hidden; }
+.ar-bar span { display: block; height: 100%; background: var(--ar-accent); border-radius: 3px; }
+.ar-bar-empty { background: repeating-linear-gradient(90deg, #e6e9e7 0 6px, transparent 6px 10px); }
+
+.ar-section { padding-top: 32px; margin-top: 32px; border-top: 1px solid var(--ar-line); }
+.ar-section > h2 { font-size: 21px; margin-bottom: 8px; }
+.ar-section h3 { font-size: 15px; margin: 22px 0 8px; }
+.ar-lead { color: var(--ar-muted); margin-bottom: 16px !important; }
+.ar-footnote { font-size: 12.5px; color: var(--ar-muted); margin-top: 10px !important; }
+.ar-quiet { color: var(--ar-muted); font-weight: 400; font-size: 13px; }
+.ar-mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 12px; word-break: break-word; }
+.ar-plain-list { margin-top: 8px !important; }
+.ar-plain-list li { padding: 4px 0 4px 14px; position: relative; }
+.ar-plain-list li::before { content: ""; position: absolute; left: 0; top: 13px; width: 5px; height: 1px; background: var(--ar-muted); }
+
+.ar-categories { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.ar-category { border: 1px solid var(--ar-line); border-radius: 8px; padding: 16px 18px; }
+.ar-category h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ar-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.ar-category-score { font-family: "Space Grotesk", system-ui, sans-serif; font-size: 24px; font-weight: 700; margin-top: 6px; }
+.ar-category p { font-size: 13.5px; margin-top: 12px !important; }
+.ar-category-muted { background: var(--ar-soft); }
+.ar-category-muted .ar-category-score { font-size: 18px; color: var(--ar-muted); }
+
+.ar-findings { display: grid; gap: 10px; }
+.ar-finding { border: 1px solid var(--ar-line); border-radius: 8px; padding: 14px 18px; }
+.ar-finding-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.ar-finding h4 { font-size: 15.5px; }
+.ar-finding p { margin-top: 6px !important; font-size: 14px; }
+.ar-finding-scope { color: var(--ar-muted); }
+.ar-severity { flex-shrink: 0; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--ar-line); color: var(--ar-muted); }
+.ar-severity-high { color: var(--ar-bad); border-color: #e3b5af; }
+.ar-severity-medium { color: var(--ar-warn); border-color: #e2c98f; }
+.ar-evidence, .ar-facts { margin: 10px 0 0; display: grid; gap: 4px; font-size: 13px; }
+.ar-evidence div, .ar-facts div { display: grid; grid-template-columns: 210px 1fr; gap: 12px; }
+.ar-evidence dt, .ar-facts dt { color: var(--ar-muted); }
+.ar-evidence dd, .ar-facts dd { margin: 0; }
+.ar-notes, .ar-all-findings { margin-top: 8px; }
+.ar-finding-group h4 { font-size: 13px; color: var(--ar-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 14px; }
+
+.ar-strengths { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 6px 28px; }
+.ar-strengths li { display: flex; gap: 10px; padding: 5px 0; font-size: 14px; }
+.ar-tick { color: var(--ar-accent); font-weight: 700; }
+
+.ar-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.ar-table th, .ar-table td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--ar-line); font-weight: 400; }
+.ar-table thead th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ar-muted); font-weight: 600; }
+.ar-table tbody th { font-weight: 600; }
+.ar-table-compact { font-size: 13px; }
+.ar-table-compact th, .ar-table-compact td { padding: 6px 10px 6px 0; }
+.ar-num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ar-state, .ar-band, .ar-status { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.ar-state-found, .ar-band-good, .ar-status-pass { color: var(--ar-accent); }
+.ar-state-missing, .ar-band-poor, .ar-status-fail { color: var(--ar-bad); }
+.ar-band-needs_improvement, .ar-status-partial { color: var(--ar-warn); }
+.ar-state-not_evaluated, .ar-status-not_evaluated { color: var(--ar-muted); }
+
+.ar-roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px !important; }
+.ar-roles li { display: flex; align-items: baseline; gap: 8px; border: 1px solid var(--ar-line); border-radius: 6px; padding: 8px 12px; font-size: 13.5px; }
+.ar-role-count { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 700; font-size: 18px; min-width: 22px; }
+
+.ar-strategies { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.ar-strategy { border: 1px solid var(--ar-line); border-radius: 8px; padding: 16px 18px; }
+.ar-strategy-head { display: flex; justify-content: space-between; align-items: baseline; }
+.ar-strategy h3 { margin: 0; font-size: 16px; }
+.ar-strategy-score { font-family: "Space Grotesk", system-ui, sans-serif; font-size: 26px; font-weight: 700; }
+.ar-strategy-score span { font-size: 14px; font-weight: 500; color: var(--ar-muted); }
+.ar-strategy table { margin-top: 10px; }
+.ar-field-note { margin-top: 14px !important; padding: 12px 16px; background: var(--ar-soft); border-radius: 6px; font-size: 14px; }
+
+.ar-breakdown details > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 12px; }
+.ar-breakdown details > summary::-webkit-details-marker { display: none; }
+.ar-breakdown details > summary h2 { font-size: 17px; color: var(--ar-muted); }
+.ar-breakdown details > summary::before { content: "+"; font-weight: 700; color: var(--ar-muted); width: 12px; }
+.ar-breakdown details[open] > summary::before { content: "–"; }
+.ar-breakdown-category h3 { margin-top: 20px; }
+
+.ar-footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--ar-line); font-size: 12.5px; color: var(--ar-muted); display: grid; gap: 6px; }
+
+@media (max-width: 760px) {
+  .ar-document { padding: 28px 20px; }
+  .ar-header-main { flex-direction: column; align-items: flex-start; }
+  .ar-overall { text-align: left; }
+  .ar-evidence div, .ar-facts div { grid-template-columns: 1fr; gap: 0; }
+  .ar-strengths { grid-template-columns: 1fr; }
+}
+
+/* ---- Print / Save as PDF (A4) ---- */
+@page { size: A4; margin: 14mm 14mm 16mm; }
+@media print {
+  html, body, body:has(.audit-report) { background: #fff !important; }
+  .site-header, .ar-toolbar, .ar-button, .environment-pill { display: none !important; }
+  .audit-report { padding: 0; font-size: 10.5pt; line-height: 1.45; color: #000; --ar-muted: #3d4541; --ar-line: #c9cfcb; }
+  .ar-document { max-width: none; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+  .ar-title h1 { font-size: 22pt; }
+  .ar-overall-value { font-size: 22pt; }
+  .ar-section { padding-top: 16pt; margin-top: 16pt; }
+  .ar-section > h2 { font-size: 14pt; }
+  /* Keep a card, a finding, a table row or a notice on one page where practical; never strand a heading. */
+  .ar-category, .ar-finding, .ar-strategy, .ar-coverage, .ar-blocked, .ar-notice, .ar-roles li, .ar-table tr, .ar-strengths li, .ar-field, .ar-footer { break-inside: avoid; page-break-inside: avoid; }
+  .audit-report h1, .audit-report h2, .audit-report h3, .audit-report h4, .ar-lead { break-after: avoid; page-break-after: avoid; }
+  .ar-table thead { display: table-header-group; }
+  .ar-categories { grid-template-columns: repeat(3, 1fr); }
+  .ar-strategies { grid-template-columns: repeat(2, 1fr); }
+  /* The breakdown prints as an appendix on its own page (the print button opens it; see print-button.tsx). */
+  .ar-breakdown { break-before: page; page-break-before: always; border-top: 0; margin-top: 0; padding-top: 0; }
+  .ar-breakdown details > summary::before { content: none; }
+  .ar-breakdown details > summary h2 { color: #000; }
+  /* Bars, chips and tinted notices carry meaning, so keep their colours; everything else prints black on white. */
+  .ar-bar, .ar-bar span, .ar-chip, .ar-coverage, .ar-blocked, .ar-notice, .ar-field-note, .ar-category-muted { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .audit-report a { color: inherit; text-decoration: none; }
+  .audit-report * { position: static !important; }
+}

@@ -8,6 +8,7 @@
 - `src/audit/**` (website audit crawler, parsers, findings, and the deterministic audit score under `src/audit/score/`)
 - `src/crawler/**` (reserved for future crawl infrastructure)
 - `src/performance/**` (performance provider adapters and the `audit.performance` job)
+- `src/report/**`, `src/ui/audit-report/**`, `app/audits/**` (the client-facing website audit report: wording is a static lookup over stored evidence, `docs/AUDIT_REPORT.md`)
 
 ## Forbidden inside protected paths
 

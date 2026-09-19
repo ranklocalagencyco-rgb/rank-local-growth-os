@@ -921,6 +921,8 @@ POST   /api/audits/:id/retry
 GET    /api/prospects/:id/audits
 ```
 
+Implemented page route (not an API): `GET /audits/:auditRunId/report`, the client-facing audit report. Read-only and workspace-scoped; it reads `website_audit_runs`, `prospects`, `website_audit_pages` (role, fetch status, `evidence_json->challenge`), `website_audit_findings`, `website_performance_observations` and the newest `website_audit_scores` row of the run, and writes nothing. No new table, column or migration. Internal only: no public or tokenised access; `noindex` is set but is not access control. Spec: `docs/AUDIT_REPORT.md`.
+
 ## Outreach
 
 ```text

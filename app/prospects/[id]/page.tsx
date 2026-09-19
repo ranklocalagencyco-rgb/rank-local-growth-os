@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { isAuditEligible } from "@/audit/jobs";
+import { isReportAvailable } from "@/report/model";
 import { getProspectAuditDetail } from "@/data/audit";
 import { getProspectDetail } from "@/data/crm";
 import { auditBlockedDetail, auditStatusLabel, categoryScoreRows, fieldDataLabel, findingLabel, findingSummary, formatDurationMs, overallScoreLabel, pageRoleLabel, performanceObservationLabel, scoreStatusLabel, severityTone } from "@/domain/audit";
@@ -41,6 +42,7 @@ export default async function ProspectDetailPage({ params, searchParams }: Prosp
       {!isAuditEligible(prospect) ? <p className="muted">Audits require a verified website.</p> : null}
       <div className="field-grid">
         <div className="field"><label>Status</label><p><span className={`status-pill tone-${auditStatus.tone}`}>{auditStatus.headline}</span>{auditStatus.detail ? <span className="muted"> · {auditStatus.detail}</span> : null}</p></div>
+        {audit.latestRun && isReportAvailable(audit.latestRun) ? <div className="field"><label>Client report</label><p><Link className="primary-link" href={`/audits/${audit.latestRun.id}/report`}>View client report</Link><span className="muted"> · printable, built from this audit&apos;s stored evidence</span></p></div> : null}
         {audit.latestRun ? <div className="field"><label>Run</label><p>{audit.latestRun.crawler_version} · {audit.latestRun.rules_version} · started {formatDate(audit.latestRun.started_at ?? audit.latestRun.created_at)}</p></div> : null}
         {auditBlocked ? <>
           <div className="field"><label>Detected</label><p>{auditBlocked.kindLabel}{auditBlocked.title ? ` · page title “${auditBlocked.title}”` : ""}</p></div>
