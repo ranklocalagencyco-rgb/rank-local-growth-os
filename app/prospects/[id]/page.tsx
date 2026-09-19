@@ -3,7 +3,7 @@ import Link from "next/link";
 import { isAuditEligible } from "@/audit/jobs";
 import { getProspectAuditDetail } from "@/data/audit";
 import { getProspectDetail } from "@/data/crm";
-import { auditStatusLabel, categoryScoreRows, fieldDataLabel, findingLabel, findingSummary, formatDurationMs, overallScoreLabel, pageRoleLabel, performanceObservationLabel, scoreStatusLabel, severityTone } from "@/domain/audit";
+import { auditBlockedDetail, auditStatusLabel, categoryScoreRows, fieldDataLabel, findingLabel, findingSummary, formatDurationMs, overallScoreLabel, pageRoleLabel, performanceObservationLabel, scoreStatusLabel, severityTone } from "@/domain/audit";
 import { formatDate, formatLocation, prospectStatusLabel } from "@/domain/crm";
 import { websiteStateLabel, websiteStateTone } from "@/domain/discovery";
 import { getWorkspaceContext } from "@/domain/workspaces";
@@ -20,6 +20,7 @@ export default async function ProspectDetailPage({ params, searchParams }: Prosp
 
   const prospect = detail.prospect;
   const auditStatus = auditStatusLabel(audit.latestRun, audit.latestJob);
+  const auditBlocked = auditBlockedDetail(audit.latestRun);
   const auditInFlight = audit.latestRun?.status === "queued" || audit.latestRun?.status === "running";
   const canAudit = isAuditEligible(prospect) && !auditInFlight;
   const summary = (audit.latestRun?.site_summary_json ?? {}) as { pagesCrawled?: number; homepageHttps?: boolean; robotsTxtReachable?: boolean; sitemapReachable?: boolean; sitemapUrlsSameSite?: number; servicePagesFound?: number; locationPagesFound?: number; galleryPagesFound?: number; blogPagesFound?: number; contactPageFound?: boolean; pagesWithLocalBusinessSchema?: number; clientRenderedPages?: number; renderedContentEvaluated?: boolean; evidenceVersion?: number; nap?: { phones?: { digits: string }[]; emails?: { value: string }[]; postcodes?: { value: string }[]; addressCandidates?: { text: string }[]; businessNames?: { value: string }[] }; schema?: { localBusinessPages?: number; hasTelephone?: boolean; hasAddress?: boolean; localBusinessMissingFields?: string[] }; duplicateTitleGroups?: unknown[]; internalRedirects?: unknown[]; pagesWithoutInboundLinks?: string[] };
@@ -41,6 +42,12 @@ export default async function ProspectDetailPage({ params, searchParams }: Prosp
       <div className="field-grid">
         <div className="field"><label>Status</label><p><span className={`status-pill tone-${auditStatus.tone}`}>{auditStatus.headline}</span>{auditStatus.detail ? <span className="muted"> · {auditStatus.detail}</span> : null}</p></div>
         {audit.latestRun ? <div className="field"><label>Run</label><p>{audit.latestRun.crawler_version} · {audit.latestRun.rules_version} · started {formatDate(audit.latestRun.started_at ?? audit.latestRun.created_at)}</p></div> : null}
+        {auditBlocked ? <>
+          <div className="field"><label>Detected</label><p>{auditBlocked.kindLabel}{auditBlocked.title ? ` · page title “${auditBlocked.title}”` : ""}</p></div>
+          <div className="field"><label>URL</label><p>{auditBlocked.url}</p></div>
+          <div className="field"><label>Reason</label><p>{auditBlocked.reason}</p><p className="muted">{auditBlocked.signals.join(" · ") || "no signals stored"}</p></div>
+          <div className="field"><label>Next step</label><p>Nothing about the website was evaluated and no SEO finding was derived from this page. The challenge was not bypassed. Run the website audit again later to retry; performance evidence below is measured separately by the provider.</p></div>
+        </> : null}
         {audit.latestRun?.status === "completed" ? <>
           <div className="field"><label>Pages</label><p>{summary.pagesCrawled ?? 0} crawled · {audit.latestRun.pages_failed} failed · {summary.servicePagesFound ?? 0} service · {summary.locationPagesFound ?? 0} location{summary.evidenceVersion ? ` · ${summary.galleryPagesFound ?? 0} gallery · ${summary.blogPagesFound ?? 0} blog` : ""} · contact {summary.contactPageFound ? "found" : "not found"}</p></div>
           {summary.evidenceVersion && summary.nap ? <div className="field"><label>Local business evidence</label><p>{summary.nap.phones?.length ?? 0} phone{(summary.nap.phones?.length ?? 0) === 1 ? "" : "s"} · {summary.nap.emails?.length ?? 0} email{(summary.nap.emails?.length ?? 0) === 1 ? "" : "s"} · {summary.nap.postcodes?.length ?? 0} postcode{(summary.nap.postcodes?.length ?? 0) === 1 ? "" : "s"} · {summary.nap.addressCandidates?.length ?? 0} address candidate{(summary.nap.addressCandidates?.length ?? 0) === 1 ? "" : "s"}{summary.nap.businessNames?.length ? ` · name signals: ${summary.nap.businessNames.map((name) => name.value).join(", ")}` : ""}{summary.schema?.localBusinessPages ? ` · LocalBusiness schema ${summary.schema.localBusinessMissingFields?.length ? `missing ${summary.schema.localBusinessMissingFields.join(", ")}` : "complete"}` : ""}</p></div> : null}
@@ -49,7 +56,7 @@ export default async function ProspectDetailPage({ params, searchParams }: Prosp
           {summary.renderedContentEvaluated === false ? <div className="field"><label>Rendering</label><p>The server HTML is a JavaScript application shell. Headings, contact and service pages and structured data were not evaluated because the crawler does not execute JavaScript.</p></div> : null}
         </> : null}
       </div>
-      {audit.scoringAvailable && audit.latestRun?.status === "completed" ? <>
+      {audit.scoringAvailable && (audit.latestRun?.status === "completed" || audit.latestRun?.status === "blocked") ? <>
         <div className="panel-header">
           <div><h3>Audit score and performance</h3><p>Deterministic score from stored evidence and documented weights (docs/AUDIT_SCORE.md). Evidence that was not collected is excluded, never counted as a failure. Internal view.</p></div>
           {!audit.score ? <form action={runPerformanceAndScoreAction}><input type="hidden" name="prospectId" value={prospect.id} /><button type="submit" className="button" disabled={!canScore}>{performancePending ? "Measurement in progress" : "Measure performance & score"}</button></form> : null}

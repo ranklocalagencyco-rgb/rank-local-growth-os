@@ -1,6 +1,7 @@
 import type { AuditFindingSeverity, AuditPageRole, WebsiteAuditPage } from "@/db/types";
+import { readChallengeEvidence, type ChallengeEvidence } from "@/audit/challenge-detection";
 import { LOCAL_BUSINESS_TYPE, type RenderingMode, type RenderingSignals } from "@/audit/extract";
-import { buildLinkGraph, duplicateGroups, evidenceVersionOf, homepageLinksTo, inboundFor, isHtmlSuccess, isMeaningfulRedirect, type InboundLink, type LinkGraph, type SiteNapSummary, type SiteSchemaSummary, type LocationPageFact, type ServicePageFact, type ServiceLocationCombo } from "@/audit/site-evidence";
+import { buildLinkGraph, duplicateGroups, evidenceVersionOf, homepageLinksTo, inboundFor, isChallengePage, isHtmlSuccess, isMeaningfulRedirect, type InboundLink, type LinkGraph, type SiteNapSummary, type SiteSchemaSummary, type LocationPageFact, type ServicePageFact, type ServiceLocationCombo } from "@/audit/site-evidence";
 import { META_DESCRIPTION_MAX_CHARS, META_DESCRIPTION_MIN_CHARS, THIN_PAGE_MIN_WORDS, TITLE_MAX_CHARS, TITLE_MIN_CHARS } from "@/audit/thresholds";
 import { isLocationHubPath } from "@/audit/url";
 
@@ -8,7 +9,7 @@ import { isLocationHubPath } from "@/audit/url";
 // No marketing copy, no AI commentary, no scores (ai/rules/no-llm-in-crawler.md). Thresholds: src/audit/thresholds.ts,
 // catalogue and rules: docs/AUDIT_RULES.md.
 
-export const AUDIT_RULES_VERSION = "audit-rules/v3";
+export const AUDIT_RULES_VERSION = "audit-rules/v4";
 /** Rules introduced in v3 read `evidence_json.evidenceVersion` and never fire on rows written by older crawlers. */
 export const RULES_MIN_EVIDENCE_VERSION = 3;
 
@@ -75,6 +76,13 @@ export type SiteSummary = {
   linksTruncatedOnAnyPage?: boolean;
   /** How the crawl ended: the page cap in force and the URLs still queued when it stopped. `frontierRemaining > 0` means absence of a page type is not proven. Absent on runs finalised before audit-score/v1. */
   crawlScope?: { pageCap: number; frontierRemaining: number };
+  // ---- RL-067 (audit-crawler/v4) ----
+  /** True only on a run whose homepage was a high-confidence challenge document (run status `blocked`). Then no other site fact in this summary was measured. */
+  crawlBlocked?: boolean;
+  /** Detection provenance of the blocked homepage. Never contains HTML. */
+  challenge?: ChallengeEvidence;
+  /** Secondary pages answered with a high-confidence challenge document; excluded from every count and rule. */
+  challengePages?: { path: string; kind: string | null }[];
 };
 
 /** Static, rule-owned title and summary for every finding code. UI labels, not AI commentary. */
@@ -111,7 +119,13 @@ export const FINDING_TEXT: Record<string, { title: string; summary: string }> = 
   localbusiness_schema_incomplete: { title: "LocalBusiness schema is missing core fields", summary: "A LocalBusiness schema type is present but name, telephone or a full postal address is missing from it." },
   location_page_not_linked_from_homepage: { title: "Location page is not linked from the homepage", summary: "The homepage's links do not include this location page." },
   service_page_not_linked_from_homepage: { title: "Service page is not linked from the homepage", summary: "The homepage's links do not include this service page." },
+  // ---- audit-rules/v4 (RL-067): operational, not SEO defects ----
+  challenge_page_detected: { title: "Bot-challenge or interstitial page returned instead of the website", summary: "The server answered the crawler with a browser-verification, challenge or holding document. Its content was not evaluated and no other finding was derived from it. A later audit may reach the real page." },
+  challenge_page_suspected: { title: "Page shows some signs of a browser-verification document", summary: "Verification wording and a challenge-related marker were found on a near-empty page, below the confidence needed to exclude it. The page was evaluated normally; treat its other findings with caution." },
 };
+
+/** Operational codes about the crawl itself. They say evidence could not be collected; they are never SEO defects. */
+export const CHALLENGE_FINDING_CODES = ["challenge_page_detected", "challenge_page_suspected"] as const;
 
 export const ALL_FINDING_CODES = Object.keys(FINDING_TEXT);
 
@@ -159,6 +173,15 @@ export function pageFindings(page: PageForRules, context: PageRuleContext | null
   const isHome = page.page_role === "homepage";
   const linkedFrom = context?.linkedFrom ?? [];
   const linkedFromPaths = linkedFrom.map((entry) => entry.path).filter((path): path is string => Boolean(path));
+
+  // RL-067: a high-confidence challenge document yields exactly one operational finding and nothing else, because nothing about the
+  // website was observed. A medium detection is reported and the page is then evaluated as usual; a low one is evidence only.
+  const challenge = readChallengeEvidence(page.evidence_json?.challenge);
+  if (challenge && challenge.confidence !== "low") {
+    const high = challenge.confidence === "high";
+    findings.push(finding({ scope: "page", code: high ? "challenge_page_detected" : "challenge_page_suspected", severity: "info", pageId: page.id, evidence: { ...pageEvidence(page), kind: challenge.kind, confidence: challenge.confidence, rule: challenge.rule, markerFamily: challenge.markerFamily, signals: challenge.signals, title: challenge.title, wordCount: challenge.wordCount, internalLinkCount: challenge.internalLinkCount, detectorVersion: challenge.detectorVersion, contentEvaluated: !high } }));
+    if (high) return findings;
+  }
 
   if (page.fetch_ok && page.http_status !== null && (page.http_status === 404 || page.http_status === 410) && page.discovered_from) {
     findings.push(finding({ scope: "page", code: "broken_internal_link", severity: "medium", pageId: page.id, evidence: { ...pageEvidence(page), discoveredFrom: page.discovered_from, linkedFrom: linkedFromPaths, anchorText: linkedFrom.map((entry) => entry.text).filter(Boolean) } }));
@@ -241,6 +264,8 @@ export function siteFindings(summary: SiteSummary, pages: PageForRules[]): Findi
   // Link discovery starts from the homepage, so an app-shell homepage means the site's pages were never reachable.
   const siteClientRendered = homepage ? renderingModeOf(homepage) === "client_rendered_likely" : crawled.length > 0 && clientRendered.length === crawled.length;
   const v3 = (summary.evidenceVersion ?? 0) >= RULES_MIN_EVIDENCE_VERSION && crawled.some(hasV3Evidence);
+  // RL-067: a page answered with a challenge document may be the contact, service or location page, so "no such page" is unproven.
+  const pageTypeAbsenceProven = !pages.some(isChallengePage);
 
   if (!summary.homepageHttps) findings.push(finding({ scope: "site", code: "homepage_not_https", severity: "high", pageId: null, evidence: { ...evidence, homepageFinalUrl: summary.homepageFinalUrl, redirectChain: summary.homepageRedirectChain } }));
   if (siteClientRendered) {
@@ -264,11 +289,11 @@ export function siteFindings(summary: SiteSummary, pages: PageForRules[]): Findi
     if (crawled.length > 0 && !hasLocalBusiness) {
       findings.push(finding({ scope: "site", code: "no_localbusiness_schema", severity: "medium", pageId: null, evidence: { ...evidence, schemaTypesSeen: summary.schemaTypesSeen } }));
     }
-    if (crawled.length > 0 && !roles.has("contact")) findings.push(finding({ scope: "site", code: "no_contact_page_detected", severity: "medium", pageId: null, evidence: { ...evidence, rolesSeen: [...roles] } }));
-    if (crawled.length > 0 && !roles.has("service")) findings.push(finding({ scope: "site", code: "no_service_pages_detected", severity: "low", pageId: null, evidence: { ...evidence, rolesSeen: [...roles] } }));
+    if (pageTypeAbsenceProven && crawled.length > 0 && !roles.has("contact")) findings.push(finding({ scope: "site", code: "no_contact_page_detected", severity: "medium", pageId: null, evidence: { ...evidence, rolesSeen: [...roles] } }));
+    if (pageTypeAbsenceProven && crawled.length > 0 && !roles.has("service")) findings.push(finding({ scope: "site", code: "no_service_pages_detected", severity: "low", pageId: null, evidence: { ...evidence, rolesSeen: [...roles] } }));
     if (v3) {
       const locationPages = summary.locationPages ?? [];
-      if (!locationPages.some((page) => !page.hub)) findings.push(finding({ scope: "site", code: "location_pages_missing", severity: "low", pageId: null, evidence: { ...evidence, rolesSeen: [...roles], locationHubPages: locationPages.filter((page) => page.hub).map((page) => page.path) } }));
+      if (pageTypeAbsenceProven && !locationPages.some((page) => !page.hub)) findings.push(finding({ scope: "site", code: "location_pages_missing", severity: "low", pageId: null, evidence: { ...evidence, rolesSeen: [...roles], locationHubPages: locationPages.filter((page) => page.hub).map((page) => page.path) } }));
       const nap = summary.nap;
       if (nap && nap.pagesEvaluated > 0) {
         if (nap.phones.length === 0) findings.push(finding({ scope: "site", code: "nap_phone_missing", severity: "medium", pageId: null, evidence: { ...evidence, pagesEvaluated: nap.pagesEvaluated, sourcesChecked: ["tel_link", "text:header", "text:footer", "text:main", "schema"] } }));

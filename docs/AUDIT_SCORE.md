@@ -1,6 +1,6 @@
 # Audit score and performance evidence
 
-Version in force: `audit-score/v1` (`src/audit/score/rules.ts`, `src/audit/score/calculate.ts`). Stamped on every `website_audit_scores` row.
+Version in force: `audit-score/v2` (`src/audit/score/rules.ts`, `src/audit/score/calculate.ts`). Stamped on every `website_audit_scores` row. v2 changes no weight, rule maximum, threshold or sufficiency constant; it adds the handling of bot-challenge evidence in §5.6, and for every audit without such evidence it produces exactly the `audit-score/v1` result (§6).
 
 The audit score is a website-quality score computed **only from stored, verifiable evidence**: the run's `site_summary_json`, the `website_audit_pages` rows and the `website_performance_observations` rows. It never reads finding titles, severities or prose, and no LLM is involved anywhere (`ai/rules/no-llm-in-crawler.md` covers `src/audit/**` and `src/performance/**`). It is **not** the Opportunity Score of `MASTER_BUILD_SPEC.md` §12; it can later feed that score's "digital gap" input.
 
@@ -24,6 +24,7 @@ audit.performance ── one provider request per invocation, then `continue` �
 audit.score ── pure calculation over stored rows ──► insert-if-absent
 ```
 
+- A `blocked` run (homepage answered with a bot-challenge document, [`AUDIT_RULES.md`](AUDIT_RULES.md) §7) gets the same follow-up, once: both jobs treat `blocked` as terminal like `completed`. The "Measure performance & score" action remains for completed runs only.
 - The follow-up is enqueued after the run is marked completed and is re-asserted whenever a completed `audit.run` is replayed, so a crash between the two can never strand an audit. For audits completed before these jobs existed, the prospect page has a "Measure performance & score" action that enqueues the same jobs.
 - The pending observation rows are the cursor: a run with mobile `succeeded` and desktop `pending` resumes at desktop. Terminal rows are never rewritten.
 - Every provider request is preceded by an atomic claim (`attempts = seen + 1 where status = 'pending' and attempts = seen`). Losing the claim means another execution owns the row, so no request is made. The claim also persists the request count before the call.
@@ -133,6 +134,10 @@ Missing evidence never counts as a failure, and it never makes a thinly measured
    - The same holds for any other withheld category, e.g. Local SEO or Content on a client-rendered site or a pre-v3 run.
 5. **Absence rules (ᵃ).** "No such page" is only a measured fact when the crawl ran out of URLs before it ran out of page budget. Finalisation stores `site_summary_json.crawlScope {pageCap, frontierRemaining}`; when the page type is absent and `frontierRemaining > 0` the rule is `not_evaluated (crawl_capped)`. Runs finalised before `crawlScope` existed are treated as capped when `pages_attempted ≥ 15` (`LEGACY_ASSUMED_PAGE_CAP`), and the breakdown records `crawlCapInferred: true`.
 
+6. **Bot-challenge evidence (v2).**
+   - *Blocked run* (`site_summary_json.crawlBlocked = true`): every rule of Technical SEO, Local SEO, Content / structure and Crawl / indexability is `not_evaluated` with reason `crawl_blocked`, including the site-level ones (HTTPS, robots.txt, sitemap, homepage status), because the layer that challenged the homepage also answers those requests. Performance is evaluated exactly as usual. Rule maxima and weights are untouched and nothing scores zero: the four categories are withheld (`null`). Coverage is therefore at most 20% (16% without field data), which is always `insufficient_evidence` with `overall_score = null`; a measured Performance category score is still stored and shown. Successful PageSpeed evidence never makes a blocked audit `provisional` or `complete`.
+   - *Challenge document on a secondary page* (completed run): the row is not an HTML success, so it is outside every page ratio, and it is also removed from both sides of `pages_fetch_success`. While such a row exists, an absent page type is `not_evaluated (challenge_pages_not_evaluated)` for the absence rules (ᵃ), because the challenged URL may be that page.
+
 All arithmetic is in integer hundredths of a point, so rule points, category scores and the overall score reconcile exactly from `breakdown_json` alone.
 
 ## 6. Transparency and versioning
@@ -141,9 +146,9 @@ All arithmetic is in integer hundredths of a point, so rule points, category sco
 
 ```json
 {
-  "scoringVersion": "audit-score/v1",
+  "scoringVersion": "audit-score/v2",
   "constants": { "categoryMinCoverage": 0.5, "completeMinCoverage": 0.7, "provisionalMinCoverage": 0.4 },
-  "inputs": { "crawlerVersion": "…", "rulesVersion": "…", "evidenceVersion": 3, "pagesStored": 15, "htmlPagesScored": 14, "renderedContentEvaluated": true, "crawlCapped": true, "crawlCapInferred": false, "observationIds": ["…"] },
+  "inputs": { "crawlerVersion": "…", "rulesVersion": "…", "evidenceVersion": 3, "pagesStored": 15, "htmlPagesScored": 14, "renderedContentEvaluated": true, "crawlCapped": true, "crawlCapInferred": false, "crawlBlocked": false, "challengePagesExcluded": 0, "observationIds": ["…"] },
   "categories": {
     "technical": { "weight": 25, "nominalMax": 25, "evaluatedMax": 25, "earned": 21.5, "coverage": 1, "score": 21.5, "suppressed": null,
       "rules": { "https": { "status": "pass", "points": 4, "max": 4, "evidence": { "homepageFinalUrl": "https://…" } } } }
@@ -155,9 +160,11 @@ Every rule's `evidence` holds the measured values the points derive from, or the
 
 A score row is immutable: `unique (audit_run_id, scoring_version)`, inserted if absent, never updated. Changing any weight, rule, threshold or sufficiency constant requires a new `AUDIT_SCORE_VERSION`; older rows keep the number their version produced and are never silently recalculated. To measure a site again, run a new audit.
 
+**v1 → v2.** `audit-score/v2` = v1 + §5.6. Existing `audit-score/v1` rows are never updated, deleted or recalculated; `audit.score` only ever inserts the row of the version in force if it is absent. For an audit without challenge evidence the two versions are numerically identical: the golden fixtures in `tests/audit/score-golden.test.ts` keep their v1 numbers unchanged, and `tests/audit/score-blocked.test.ts` pins the published v1 category and overall values of every ordinary fixture under v2. The only v2 additions to the breakdown are `inputs.crawlBlocked` and `inputs.challengePagesExcluded`.
+
 ## 7. Known limitations
 
 - `audit-rules/v3` treats any path containing a location hub segment as a hub, so its `location_pages_missing` finding can fire for a site whose town pages live under `/areas-we-cover/…`. The score does not inherit this (§4); the rule itself is unchanged in this version.
 - If the `audit.performance` job dead-letters on an infrastructure error (not a provider error), its observation rows stay `pending` and no score is written until the job is re-queued by an operator. Tracked as RL-066.
-- The score trusts the crawl evidence it is given. If a host serves the crawler a bot-challenge or interstitial page with HTTP 200, the run completes on that page and can be scored `complete` on evidence that is not the website (seen live on 2026-09-19). Detection belongs in the crawler and is tracked as RL-067; until then, treat a completed run with one page and a near-empty homepage as not measured.
+- The score trusts the crawl evidence it is given. Bot-challenge documents served with HTTP 200 are detected by the crawler since RL-067 (§5.6); a challenge the detector does not recognise ([`AUDIT_RULES.md`](AUDIT_RULES.md) §7.4) would still be scored as the website. One historical row is affected and deliberately left as written: an `audit-score/v1` `complete` score computed on 2026-09-19 from a one-page challenge document. Treat any pre-v4 completed run with one page and a near-empty homepage as not measured.
 - Lab metrics come from one synthetic run and vary between runs; the stored observation, not a re-measurement, is what a score is reproducible from.

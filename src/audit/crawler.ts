@@ -1,9 +1,10 @@
 import type { SafeFetcher, SafeFetchResult } from "@/audit/safe-fetch";
+import { detectChallengePage, isBlockingChallenge, readChallengeEvidence, type ChallengeEvidence } from "@/audit/challenge-detection";
 import { classifyPage, roleFromSectionLabel, type InboundLinkContext } from "@/audit/classify";
 import { EVIDENCE_VERSION, AUDIT_CRAWLER_VERSION, extractPageEvidence, type PageEvidence } from "@/audit/extract";
 import { renderingModeOf, type SiteSummary } from "@/audit/findings";
 import { parseRobotsTxt, parseSitemapXml } from "@/audit/sitemap";
-import { buildLinkGraph, duplicateGroups, evidenceVersionOf, inboundFor, isHtmlSuccess, isMeaningfulRedirect, napSummary, rolePageFacts, schemaSummary, type PageRow } from "@/audit/site-evidence";
+import { buildLinkGraph, duplicateGroups, evidenceVersionOf, inboundFor, isChallengePage, isHtmlSuccess, isMeaningfulRedirect, napSummary, rolePageFacts, schemaSummary, type PageRow } from "@/audit/site-evidence";
 import { classifyPageRole, crawlPriority, isCrawlablePath, isSameSite, normalizeAuditUrl } from "@/audit/url";
 import type { AuditDiscoveredVia, WebsiteAuditPage } from "@/db/types";
 import type { AuditPageInsert } from "@/audit/store";
@@ -23,7 +24,8 @@ const READ_TEXT_TYPES = /^(?:text\/plain|text\/xml|application\/xml|application\
 export type FrontierEntry = { url: string; key: string; via: AuditDiscoveredVia; from: string | null; priority: number };
 
 export type CrawlState = {
-  phase: "start" | "crawl" | "finalize";
+  /** `blocked`: the homepage was a high-confidence challenge document; the run finalises as blocked without any further request. */
+  phase: "start" | "crawl" | "finalize" | "blocked";
   siteDomain: string | null;
   frontier: FrontierEntry[];
   visited: string[];
@@ -55,7 +57,7 @@ export function parseCrawlState(value: unknown): CrawlState {
   if (!value || typeof value !== "object") return base;
   const record = value as Partial<CrawlState>;
   return {
-    phase: record.phase === "crawl" || record.phase === "finalize" ? record.phase : "start",
+    phase: record.phase === "crawl" || record.phase === "finalize" || record.phase === "blocked" ? record.phase : "start",
     siteDomain: typeof record.siteDomain === "string" ? record.siteDomain : null,
     frontier: Array.isArray(record.frontier) ? record.frontier.filter((entry): entry is FrontierEntry => Boolean(entry && typeof entry === "object" && typeof (entry as FrontierEntry).url === "string" && typeof (entry as FrontierEntry).key === "string")) : [],
     visited: Array.isArray(record.visited) ? record.visited.filter((key): key is string => typeof key === "string") : [],
@@ -108,9 +110,18 @@ export function nextFrontierEntry(state: CrawlState): FrontierEntry | null {
   return entry;
 }
 
-export type PageOutcome = { page: AuditPageInsert | null; evidence: PageEvidence | null; duplicateOf: string | null };
+/**
+ * `evidence` is null for anything that is not website content, including a high-confidence challenge document, so callers can never
+ * enqueue links or record link context from one. `challenge` carries any detection (high, medium or low); `challengeExcluded` is true
+ * only for high confidence.
+ */
+export type PageOutcome = { page: AuditPageInsert | null; evidence: PageEvidence | null; duplicateOf: string | null; challenge: ChallengeEvidence | null; challengeExcluded: boolean };
 
-/** Turns a fetch result into a page row (evidence extracted for HTML successes). Returns no row for a redirect onto an already-crawled URL. */
+/**
+ * Turns a fetch result into a page row (evidence extracted for HTML successes). Returns no row for a redirect onto an already-crawled URL.
+ * A high-confidence challenge document (src/audit/challenge-detection.ts) is stored like a non-HTML response: HTTP facts and the
+ * detection provenance only. Its title, headings, links, NAP and schema never reach the content columns, so no rule can read them.
+ */
 export function buildPageOutcome(input: { workspaceId: string; runId: string; prospectId: string; entry: Pick<FrontierEntry, "url" | "via" | "from">; result: SafeFetchResult; state: CrawlState; fetchedAt: string }): PageOutcome {
   const { result, state, entry } = input;
   const finalNormalized = result.finalUrl ? normalizeAuditUrl(result.finalUrl) : null;
@@ -118,13 +129,19 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
 
   if (result.ok && finalNormalized && finalNormalized.key !== requestedNormalized?.key && state.finalKeys.includes(finalNormalized.key)) {
     state.duplicateRedirects += 1;
-    return { page: null, evidence: null, duplicateOf: finalNormalized.url };
+    return { page: null, evidence: null, duplicateOf: finalNormalized.url, challenge: null, challengeExcluded: false };
   }
   if (finalNormalized && !state.finalKeys.includes(finalNormalized.key)) state.finalKeys.push(finalNormalized.key);
 
   const path = finalNormalized?.path ?? requestedNormalized?.path ?? null;
   const html = result.ok && result.isHtml && result.body !== null && result.status !== null && result.status >= 200 && result.status < 300;
-  const evidence = html && state.siteDomain ? extractPageEvidence(result.body as string, result.finalUrl as string, state.siteDomain) : null;
+  const extracted = html && state.siteDomain ? extractPageEvidence(result.body as string, result.finalUrl as string, state.siteDomain) : null;
+  const detection = extracted ? detectChallengePage({ html: result.body as string, title: extracted.title, wordCount: extracted.wordCount, internalLinkCount: extracted.internalLinkCount, h1Count: extracted.h1Count }) : null;
+  const challenge: ChallengeEvidence | null = extracted && detection?.detected
+    ? { ...detection, url: result.finalUrl ?? entry.url, httpStatus: result.status, title: extracted.title?.slice(0, 200) ?? null, wordCount: extracted.wordCount, internalLinkCount: extracted.internalLinkCount, h1Count: extracted.h1Count, detectedAt: input.fetchedAt }
+    : null;
+  const challengeExcluded = isBlockingChallenge(challenge);
+  const evidence = challengeExcluded ? null : extracted;
   const inbound = (requestedNormalized && state.linkContext[requestedNormalized.key]) ?? (finalNormalized && state.linkContext[finalNormalized.key]) ?? null;
   const classification = evidence
     ? classifyPage({ path, via: entry.via, title: evidence.title, h1Text: evidence.h1Text, breadcrumbNames: evidence.breadcrumbNames, schemaTypes: evidence.schemaTypes, inbound })
@@ -198,10 +215,12 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
       nap: evidence?.nap ?? null,
       schema: evidence?.schema ?? null,
       headingFingerprint: evidence?.headingFingerprint ?? null,
+      // RL-067: present only when the challenge detector matched. High confidence = this row is not website evidence.
+      ...(challenge ? { challenge } : {}),
     },
     fetched_at: input.fetchedAt,
   };
-  return { page, evidence, duplicateOf: null };
+  return { page, evidence, duplicateOf: null, challenge, challengeExcluded };
 }
 
 export type SitemapDiscovery = { robotsTxtReachable: boolean; robotsDisallowAll: boolean; sitemapReachable: boolean; sitemapUrlsDiscovered: number; sitemapUrlsSameSite: number; urls: string[] };
@@ -286,7 +305,9 @@ export function summariseSite(state: CrawlState, pages: (PageRow & Pick<WebsiteA
     homepageRenderingMode,
     renderedContentEvaluated: homepageRenderingMode !== "client_rendered_likely",
   };
-  if (!v3) return base;
+  // Secondary pages answered with a challenge document: provenance only, excluded from every count above.
+  const challengePages = pages.filter(isChallengePage).map((page) => ({ path: page.path ?? page.requested_url, kind: readChallengeEvidence(page.evidence_json?.challenge)?.kind ?? null }));
+  if (!v3) return challengePages.length > 0 ? { ...base, challengePages } : base;
 
   const graph = buildLinkGraph(pages);
   const duplicates = duplicateGroups(pages);
@@ -298,6 +319,7 @@ export function summariseSite(state: CrawlState, pages: (PageRow & Pick<WebsiteA
 
   return {
     ...base,
+    ...(challengePages.length > 0 ? { challengePages } : {}),
     evidenceVersion: EVIDENCE_VERSION,
     galleryPagesFound: html.filter((page) => page.page_role === "gallery").length,
     blogPagesFound: html.filter((page) => page.page_role === "blog").length,
@@ -314,6 +336,14 @@ export function summariseSite(state: CrawlState, pages: (PageRow & Pick<WebsiteA
     internalRedirects,
     linksTruncatedOnAnyPage: graph.truncated,
   };
+}
+
+/**
+ * Summary of a run whose homepage was a high-confidence challenge document. Only what was observed about the response is stored;
+ * no site fact (HTTPS, robots, sitemap, roles, NAP, schema) is derived, because none of them was measured on the real website.
+ */
+export function blockedSiteSummary(state: CrawlState, challenge: ChallengeEvidence): Pick<SiteSummary, "homepageUrl" | "homepageFinalUrl" | "homepageStatus" | "homepageRedirectChain" | "crawlBlocked" | "challenge"> {
+  return { homepageUrl: state.summary.homepageUrl ?? "", homepageFinalUrl: state.summary.homepageFinalUrl ?? null, homepageStatus: state.summary.homepageStatus ?? null, homepageRedirectChain: state.summary.homepageRedirectChain ?? [], crawlBlocked: true, challenge };
 }
 
 export function siteOrigin(url: string): string | null {

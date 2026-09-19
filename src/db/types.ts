@@ -173,7 +173,8 @@ export type LocalRankObservation = {
 	created_at: string;
 };
 
-export type WebsiteAuditStatus = "queued" | "running" | "completed" | "failed";
+/** `blocked` (migration 009): the homepage was a bot-challenge / interstitial document, so the website itself was never crawled. Terminal, and not a failure. */
+export type WebsiteAuditStatus = "queued" | "running" | "completed" | "blocked" | "failed";
 /** Deterministic page role. `gallery` and `blog` were added in migration 007 (audit-crawler/v3). */
 export type AuditPageRole = "homepage" | "service" | "location" | "about" | "contact" | "testimonials" | "gallery" | "blog" | "other";
 export type AuditDiscoveredVia = "homepage" | "sitemap" | "link";
@@ -194,6 +195,8 @@ export type WebsiteAuditRun = {
 	started_at: string | null;
 	completed_at: string | null;
 	failed_at: string | null;
+	/** Set when status becomes `blocked` (migration 009). */
+	blocked_at: string | null;
 	pages_attempted: number;
 	pages_succeeded: number;
 	pages_failed: number;

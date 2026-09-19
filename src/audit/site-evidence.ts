@@ -1,3 +1,4 @@
+import { isBlockingChallenge, readChallengeEvidence } from "@/audit/challenge-detection";
 import type { HeadingPattern } from "@/audit/classify";
 import type { PageLink } from "@/audit/extract";
 import type { NapEvidence } from "@/audit/nap";
@@ -33,7 +34,17 @@ export function evidenceVersionOf(page: Pick<WebsiteAuditPage, "evidence_json">)
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-export function isHtmlSuccess(page: Pick<WebsiteAuditPage, "fetch_ok" | "http_status" | "content_type">): boolean {
+/**
+ * True for a row whose response was a high-confidence bot-challenge / interstitial document (RL-067). The HTTP fetch succeeded, but
+ * the document is not the website, so the row is provenance only. Medium and low detections are recorded and change nothing.
+ */
+export function isChallengePage(page: { evidence_json?: WebsiteAuditPage["evidence_json"] | null }): boolean {
+  return isBlockingChallenge(readChallengeEvidence(page.evidence_json?.challenge));
+}
+
+/** A fetched HTML document that counts as website evidence. Every summary, finding and score rule selects pages through this. */
+export function isHtmlSuccess(page: Pick<WebsiteAuditPage, "fetch_ok" | "http_status" | "content_type"> & { evidence_json?: WebsiteAuditPage["evidence_json"] | null }): boolean {
+  if (isChallengePage(page)) return false;
   return page.fetch_ok && page.http_status !== null && page.http_status >= 200 && page.http_status < 300 && /^(?:text\/html|application\/xhtml\+xml)/i.test(page.content_type ?? "");
 }
 

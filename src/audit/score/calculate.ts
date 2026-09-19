@@ -1,15 +1,18 @@
 import { renderingModeOf, type SiteSummary } from "@/audit/findings";
 import { AUDIT_SCORE_VERSION, CATEGORY_MIN_COVERAGE, CATEGORY_ORDER, CATEGORY_WEIGHTS, COMPLETE_MIN_COVERAGE, LEGACY_ASSUMED_PAGE_CAP, PERFORMANCE_THRESHOLDS, PROVISIONAL_MIN_COVERAGE, RULE_POINTS, type ScoreCategoryKey } from "@/audit/score/rules";
 import { LOCAL_BUSINESS_TYPE } from "@/audit/schema-types";
-import { buildLinkGraph, evidenceVersionOf, homepageLinksTo, isHtmlSuccess, readEvidenceV3 } from "@/audit/site-evidence";
+import { buildLinkGraph, evidenceVersionOf, homepageLinksTo, isChallengePage, isHtmlSuccess, readEvidenceV3 } from "@/audit/site-evidence";
 import { META_DESCRIPTION_MAX_CHARS, META_DESCRIPTION_MIN_CHARS, THIN_PAGE_MIN_WORDS, TITLE_MAX_CHARS, TITLE_MIN_CHARS } from "@/audit/thresholds";
 import { isLocationHubPath } from "@/audit/url";
 import type { AuditScoreStatus, WebsiteAuditPage, WebsiteAuditRun, WebsitePerformanceObservation } from "@/db/types";
 
-// Pure, deterministic audit score (audit-score/v1). Input: stored rows only (run summary, page rows, performance observations).
+// Pure, deterministic audit score (audit-score/v2; identical to v1 for every run without challenge evidence, see docs/AUDIT_SCORE.md §6). Input: stored rows only (run summary, page rows, performance observations).
 // Output: a breakdown in which every point is tied to a measured value. Never reads finding titles, severities or prose.
 // All arithmetic is in integer hundredths of a point ("centi") so category totals reconcile exactly with the overall score.
 // A rule the system could not measure is `not_evaluated` and leaves the denominator; it is never scored as a failure.
+// v2 (RL-067): on a blocked run (`site_summary_json.crawlBlocked`) every crawl-derived rule is `not_evaluated (crawl_blocked)`,
+// a secondary page that was a challenge document is left out of `pages_fetch_success`, and while such a page exists the absence of
+// a page type is not a measured fact. Performance is evaluated as before.
 
 export type RuleStatus = "pass" | "partial" | "fail" | "not_evaluated";
 
@@ -40,7 +43,7 @@ export type CategoryBreakdown = {
 export type ScoreBreakdown = {
   scoringVersion: string;
   constants: { categoryMinCoverage: number; completeMinCoverage: number; provisionalMinCoverage: number };
-  inputs: { crawlerVersion: string; rulesVersion: string; evidenceVersion: number; pagesStored: number; htmlPagesScored: number; renderedContentEvaluated: boolean; crawlCapped: boolean; crawlCapInferred: boolean; observationIds: string[] };
+  inputs: { crawlerVersion: string; rulesVersion: string; evidenceVersion: number; pagesStored: number; htmlPagesScored: number; renderedContentEvaluated: boolean; crawlCapped: boolean; crawlCapInferred: boolean; /** v2 */ crawlBlocked: boolean; /** v2 */ challengePagesExcluded: number; observationIds: string[] };
   categories: Record<ScoreCategoryKey, CategoryBreakdown>;
 };
 
@@ -129,6 +132,11 @@ export function scoreStatusOf(coverageCenti: number, everyCategoryScored: boolea
 export function calculateAuditScore(input: AuditScoreInput): AuditScoreResult {
   const summary = (input.run.site_summary_json ?? {}) as Partial<SiteSummary>;
   const pages = input.pages;
+  // Blocked run: the homepage response was a challenge document, so nothing in the summary or the page rows describes the website.
+  const crawlBlocked = summary.crawlBlocked === true;
+  const challengePagesExcluded = pages.filter(isChallengePage).length;
+  // Challenge documents are not fetch failures of the website and not successes either: they leave both sides of the ratio.
+  const attemptedPages = pages.filter((page) => !isChallengePage(page));
   const html = pages.filter(isHtmlSuccess);
   const homepage = html.find((page) => page.page_role === "homepage") ?? null;
   const evidenceVersion = typeof summary.evidenceVersion === "number" ? summary.evidenceVersion : 0;
@@ -145,6 +153,8 @@ export function calculateAuditScore(input: AuditScoreInput): AuditScoreResult {
   /** Absence of a page type is only a measured fact when the crawl ran out of URLs before it ran out of page budget. */
   const presence = (max: number, present: boolean, evidence: Record<string, unknown>): RuleCenti => {
     if (present) return binary(max, true, evidence);
+    // v2: a page that answered with a challenge document may be the missing page type, so its absence was not measured.
+    if (challengePagesExcluded > 0) return notEvaluated(max, "challenge_pages_not_evaluated", { ...evidence, challengePagesExcluded });
     if (crawlCapped) return notEvaluated(max, "crawl_capped", { ...evidence, pagesAttempted: input.run.pages_attempted, crawlCapInferred });
     return binary(max, false, evidence);
   };
@@ -157,7 +167,7 @@ export function calculateAuditScore(input: AuditScoreInput): AuditScoreResult {
     homepage_indexable: homepage ? binary(P_CRAWL.homepage_indexable, !homepage.noindex, { noindex: homepage.noindex, metaRobots: homepage.meta_robots }) : notEvaluated(P_CRAWL.homepage_indexable, "homepage_row_missing"),
     robots_allows_crawling: typeof summary.robotsDisallowAll === "boolean" ? binary(P_CRAWL.robots_allows_crawling, !summary.robotsDisallowAll, { robotsDisallowAll: summary.robotsDisallowAll, robotsTxtReachable: summary.robotsTxtReachable ?? null }) : notEvaluated(P_CRAWL.robots_allows_crawling, "robots_not_recorded"),
     pages_indexable: ratio(P_CRAWL.pages_indexable, otherHtml.filter((page) => !page.noindex).length, otherHtml.length),
-    pages_fetch_success: ratio(P_CRAWL.pages_fetch_success, pages.filter((page) => page.fetch_ok && (page.http_status === null || page.http_status < 500)).length, pages.length),
+    pages_fetch_success: ratio(P_CRAWL.pages_fetch_success, attemptedPages.filter((page) => page.fetch_ok && (page.http_status === null || page.http_status < 500)).length, attemptedPages.length),
   };
 
   // ---- Technical SEO ----
@@ -270,7 +280,9 @@ export function calculateAuditScore(input: AuditScoreInput): AuditScoreResult {
     field_cls: field(P_PERF.field_cls, numberOf(mobile?.field_cls), "fieldCls", PERFORMANCE_THRESHOLDS.cls),
   };
 
-  const ruleSets: Record<ScoreCategoryKey, Record<string, RuleCenti>> = { technical, local_seo: localSeo, content_structure: contentStructure, performance, crawl };
+  /** Missing crawl evidence stays missing: every rule keeps its maximum and leaves the denominator. No zero, no penalty. */
+  const crawlDerived = (rules: Record<string, RuleCenti>): Record<string, RuleCenti> => (crawlBlocked ? Object.fromEntries(Object.entries(rules).map(([code, rule]) => [code, notEvaluated(fromCenti(rule.maxCenti), "crawl_blocked")])) : rules);
+  const ruleSets: Record<ScoreCategoryKey, Record<string, RuleCenti>> = { technical: crawlDerived(technical), local_seo: crawlDerived(localSeo), content_structure: crawlDerived(contentStructure), performance, crawl: crawlDerived(crawl) };
 
   // ---- Totals ----
   const categories = {} as Record<ScoreCategoryKey, CategoryBreakdown>;
@@ -320,7 +332,7 @@ export function calculateAuditScore(input: AuditScoreInput): AuditScoreResult {
     breakdown: {
       scoringVersion: AUDIT_SCORE_VERSION,
       constants: { categoryMinCoverage: CATEGORY_MIN_COVERAGE, completeMinCoverage: COMPLETE_MIN_COVERAGE, provisionalMinCoverage: PROVISIONAL_MIN_COVERAGE },
-      inputs: { crawlerVersion: input.run.crawler_version, rulesVersion: input.run.rules_version, evidenceVersion, pagesStored: pages.length, htmlPagesScored: html.length, renderedContentEvaluated: siteContentEvaluated, crawlCapped, crawlCapInferred, observationIds: input.observations.filter((observation) => observation.status === "succeeded").map((observation) => observation.id).sort() },
+      inputs: { crawlerVersion: input.run.crawler_version, rulesVersion: input.run.rules_version, evidenceVersion, pagesStored: pages.length, htmlPagesScored: html.length, renderedContentEvaluated: siteContentEvaluated, crawlCapped, crawlCapInferred, crawlBlocked, challengePagesExcluded, observationIds: input.observations.filter((observation) => observation.status === "succeeded").map((observation) => observation.id).sort() },
       categories,
     },
   };

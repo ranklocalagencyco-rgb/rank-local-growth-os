@@ -4,6 +4,7 @@ import { auditJobIdempotencyKey, isAuditEligible, runWebsiteAudit, TransientAudi
 import { SafeFetcher, type FetchLike, type FetchLikeInit } from "@/audit/safe-fetch";
 import type { AuditFindingInsert, AuditPageInsert, AuditProspect, AuditRunPatch, AuditStore } from "@/audit/store";
 import type { WebsiteAuditPage, WebsiteAuditRun } from "@/db/types";
+import { cloudflareChallenge, mediumVerificationPage, scRoofingInterstitial } from "./fixtures/challenge-pages";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const prospectId = "33333333-3333-4333-8333-333333333333";
@@ -50,7 +51,7 @@ class MemoryAuditStore implements AuditStore {
 
   constructor(prospect: Partial<AuditProspect> = {}, run: Partial<WebsiteAuditRun> = {}) {
     this.prospect = { id: prospectId, workspace_id: workspaceId, display_name: "A&B Roofing", website_state: "verified_website", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", ...prospect };
-    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "queued", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", crawler_version: "audit-crawler/v2", rules_version: "audit-rules/v2", started_at: null, completed_at: null, failed_at: null, pages_attempted: 0, pages_succeeded: 0, pages_failed: 0, error_summary: null, site_summary_json: {}, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
+    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "queued", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", crawler_version: "audit-crawler/v2", rules_version: "audit-rules/v2", started_at: null, completed_at: null, failed_at: null, blocked_at: null, pages_attempted: 0, pages_succeeded: 0, pages_failed: 0, error_summary: null, site_summary_json: {}, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
   }
   async getRun() { return this.run; }
   async getProspect() { return this.prospect; }
@@ -60,6 +61,7 @@ class MemoryAuditStore implements AuditStore {
     if (patch.startedAt !== undefined) this.run.started_at = patch.startedAt;
     if (patch.completedAt !== undefined) this.run.completed_at = patch.completedAt;
     if (patch.failedAt !== undefined) this.run.failed_at = patch.failedAt;
+    if (patch.blockedAt !== undefined) this.run.blocked_at = patch.blockedAt;
     if (patch.pagesAttempted !== undefined) this.run.pages_attempted = patch.pagesAttempted;
     if (patch.pagesSucceeded !== undefined) this.run.pages_succeeded = patch.pagesSucceeded;
     if (patch.pagesFailed !== undefined) this.run.pages_failed = patch.pagesFailed;
@@ -138,8 +140,8 @@ describe("website audit job", () => {
     expect(codes).toContain("page:missing_h1");
     expect(codes).not.toContain("site:no_localbusiness_schema");
     expect(codes).not.toContain("site:no_contact_page_detected");
-    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v3")).toBe(true);
-    expect(store.pages.every((page) => page.evidence_json.evidenceVersion === 3 && page.evidence_json.crawlerVersion === "audit-crawler/v3")).toBe(true);
+    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v4")).toBe(true);
+    expect(store.pages.every((page) => page.evidence_json.evidenceVersion === 3 && page.evidence_json.crawlerVersion === "audit-crawler/v4")).toBe(true);
     expect(store.activity).toEqual(["audit.completed"]);
     expect(store.events).toEqual([`audit.completed:${runId}`]);
   });
@@ -213,7 +215,7 @@ describe("website audit job", () => {
   it("goes straight to the score when no performance provider is enabled", async () => {
     const store = new MemoryAuditStore();
     await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(roofingSite), 15, "none"));
-    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.score:${runId}:audit-score/v1`]);
+    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.score:${runId}:audit-score/v2`]);
   });
 
   it("records how the crawl ended so the score can tell a capped crawl from an exhausted one", async () => {
@@ -414,5 +416,111 @@ describe("website audit job", () => {
     expect(store.run.pages_attempted).toBe(store.pages.length);
     expect(store.run.pages_succeeded + store.run.pages_failed).toBe(store.pages.length);
     expect(store.run.crawl_state_json).toMatchObject({ visited: expect.arrayContaining(["example.co.uk/"]) });
+  });
+
+  // ---- RL-067: bot-challenge / interstitial documents ----
+
+  const challengedHome: Record<string, Route> = {
+    ...roofingSite,
+    "https://example.co.uk/": { body: scRoofingInterstitial },
+  };
+
+  it("blocks the run on a homepage challenge: one request, no robots/sitemap/links, one operational finding, follow-up enqueued once", async () => {
+    const store = new MemoryAuditStore();
+    const fetchImpl = site(challengedHome);
+    const outcome = await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
+
+    // The job completes (no queue retry against a host that is challenging us); the run is blocked, not failed and not completed.
+    expect(outcome).toEqual({ status: "completed" });
+    expect(fetchImpl.calls).toEqual(["https://example.co.uk/"]);
+    expect(store.run).toMatchObject({ status: "blocked", blocked_at: at, completed_at: null, failed_at: null, error_summary: null, pages_attempted: 1, pages_succeeded: 0, pages_failed: 1 });
+
+    // The row is provenance only: HTTP facts and the detection, none of the challenge document's content.
+    expect(store.pages).toHaveLength(1);
+    expect(store.pages[0]).toMatchObject({ page_role: "homepage", fetch_ok: true, http_status: 200, title: null, meta_description: null, h1_count: 0, word_count: 0, internal_link_count: 0, noindex: false, meta_robots: null, schema_types: [] });
+    expect(store.pages[0].evidence_json).toMatchObject({ links: [], nap: null, schema: null, renderingMode: "unknown", challenge: { detected: true, confidence: "high", rule: "title_tiny_document", kind: "bot_challenge", title: "One moment, please...", wordCount: 8, internalLinkCount: 0, h1Count: 0, httpStatus: 200, url: "https://example.co.uk/", detectedAt: at } });
+    expect(JSON.stringify(store.pages[0])).not.toContain("REDACTED");
+    expect(JSON.stringify(store.pages[0])).not.toContain("<");
+
+    // Exactly one finding, operational; nothing derived from the challenge HTML (its noindex meta included).
+    expect(store.findings.map((finding) => `${finding.scope}:${finding.code}:${finding.severity}`)).toEqual(["page:challenge_page_detected:info"]);
+    expect(store.findings[0]).toMatchObject({ pageId: "page-1", ruleVersion: "audit-rules/v4", evidence: { kind: "bot_challenge", confidence: "high", contentEvaluated: false, signals: ["title:one_moment_please", "text:request_being_verified", "structure:tiny_document"] } });
+
+    // The summary says blocked and carries the provenance; no site fact was derived.
+    expect(store.run.site_summary_json).toMatchObject({ crawlBlocked: true, homepageUrl: "https://example.co.uk", homepageFinalUrl: "https://example.co.uk/", homepageStatus: 200, challenge: { confidence: "high", kind: "bot_challenge" } });
+    for (const key of ["homepageHttps", "robotsTxtReachable", "sitemapReachable", "pagesCrawled", "contactPageFound", "nap", "schema", "crawlScope"]) expect(store.run.site_summary_json).not.toHaveProperty(key);
+    expect((store.run.crawl_state_json as { phase: string; frontier: unknown[] })).toMatchObject({ phase: "blocked", frontier: [] });
+
+    expect(store.activity).toEqual(["audit.blocked"]);
+    expect(store.events).toEqual([`audit.blocked:${runId}`]);
+    expect(store.jobs).toEqual([{ type: "audit.performance", idempotencyKey: `audit.performance:${runId}`, payload: { auditRunId: runId, prospectId } }]);
+
+    // Replay of the finished job: no request, no duplicate finding, event or follow-up.
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl))).toEqual({ status: "completed" });
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(store.findings).toHaveLength(1);
+    expect(store.jobs).toHaveLength(1);
+    expect(store.run.status).toBe("blocked");
+  });
+
+  it("finishes a blocked run from the stored row after a crash, without requesting the homepage again", async () => {
+    const store = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(challengedHome)));
+    // Simulate a crash after the phase was persisted but before the status flip.
+    store.run.status = "running";
+    store.run.blocked_at = null;
+    store.findings = [];
+    store.jobs = [];
+    const retry = site({});
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(60_000, 2), deps(store, retry))).toEqual({ status: "completed" });
+    expect(retry.calls).toEqual([]);
+    expect(store.run).toMatchObject({ status: "blocked", blocked_at: at });
+    expect(store.findings.map((finding) => finding.code)).toEqual(["challenge_page_detected"]);
+    expect(store.pages).toHaveLength(1);
+    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.performance:${runId}`]);
+  });
+
+  it("goes straight to the score for a blocked run when no performance provider is enabled", async () => {
+    const store = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(challengedHome), 15, "none"));
+    expect(store.run.status).toBe("blocked");
+    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.score:${runId}:audit-score/v2`]);
+  });
+
+  it("a challenge on a secondary page is excluded and never followed, and the run still completes on the valid pages", async () => {
+    const store = new MemoryAuditStore();
+    // The contact URL answers with a Cloudflare challenge that links onwards; everything else is the real site.
+    const fetchImpl = site({ ...roofingSite, "https://example.co.uk/contact": { body: cloudflareChallenge.replace("</body>", '<a href="/only-linked-from-challenge">x</a></body>') } });
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl))).toEqual({ status: "completed" });
+
+    expect(store.run).toMatchObject({ status: "completed", blocked_at: null, pages_attempted: 7, pages_succeeded: 5, pages_failed: 2 });
+    expect(fetchImpl.calls).not.toContain("https://example.co.uk/only-linked-from-challenge");
+    const contact = store.pages.find((page) => page.requested_url === "https://example.co.uk/contact")!;
+    expect(contact).toMatchObject({ fetch_ok: true, http_status: 200, title: null, word_count: 0, form_count: 0 });
+    expect(contact.evidence_json).toMatchObject({ challenge: { confidence: "high", rule: "strong_marker", markerFamily: "cloudflare" }, links: [] });
+
+    // The only finding on that row is the operational one; the site is not told it has no contact page, because that was not measured.
+    expect(store.findings.filter((finding) => finding.pageId === contact.id).map((finding) => finding.code)).toEqual(["challenge_page_detected"]);
+    expect(store.findings.map((finding) => finding.code)).not.toContain("no_contact_page_detected");
+    const summary = store.run.site_summary_json as { crawlBlocked?: boolean; pagesCrawled: number; contactPageFound: boolean; challengePages: unknown[] };
+    expect(summary.crawlBlocked).toBeUndefined();
+    expect(summary).toMatchObject({ pagesCrawled: 5, contactPageFound: false, challengePages: [{ path: "/contact", kind: "bot_challenge" }] });
+    expect(store.activity).toEqual(["audit.completed"]);
+  });
+
+  it("a medium-confidence homepage never blocks: the crawl runs normally and one informational finding records the suspicion", async () => {
+    const store = new MemoryAuditStore();
+    const fetchImpl = site({ ...roofingSite, "https://example.co.uk/": { body: mediumVerificationPage } });
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl))).toEqual({ status: "completed" });
+    expect(store.run).toMatchObject({ status: "completed", blocked_at: null });
+    expect(fetchImpl.calls).toContain("https://example.co.uk/robots.txt");
+    const home = store.pages.find((page) => page.page_role === "homepage")!;
+    expect(home.evidence_json).toMatchObject({ challenge: { confidence: "medium", rule: "phrase_weak_marker" } });
+    expect(home.title).toBe("Example Roofing");
+    const codes = store.findings.filter((finding) => finding.pageId === home.id).map((finding) => finding.code);
+    expect(codes).toContain("challenge_page_suspected");
+    expect(codes).toContain("missing_h1");
+    expect(codes).not.toContain("challenge_page_detected");
+    expect((store.run.site_summary_json as { crawlBlocked?: boolean }).crawlBlocked).toBeUndefined();
   });
 });

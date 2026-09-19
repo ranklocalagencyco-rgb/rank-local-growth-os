@@ -1,9 +1,12 @@
-// audit-score/v1: documented weights, rule maxima, thresholds and evidence-sufficiency constants (RL-070, RL-071).
+// audit-score/v2: documented weights, rule maxima, thresholds and evidence-sufficiency constants (RL-070, RL-071).
 // Catalogue and rationale: docs/AUDIT_SCORE.md. Changing anything here requires a new AUDIT_SCORE_VERSION; stored scores are
 // never recalculated, so a published number always matches the formula named on its row.
 // Deterministic only: no LLM, no finding titles or prose, no subjective judgements (ai/rules/no-llm-in-crawler.md).
 
-export const AUDIT_SCORE_VERSION = "audit-score/v1";
+// v2 (RL-067) changes no weight, maximum, threshold or sufficiency constant. It adds two evidence-handling rules: a blocked run's
+// crawl-derived rules are not evaluated, and challenge documents leave `pages_fetch_success`. Any run without challenge evidence
+// scores exactly as under v1 (tests/audit/score-golden.test.ts). Stored audit-score/v1 rows are never rewritten or recalculated.
+export const AUDIT_SCORE_VERSION = "audit-score/v2";
 
 export type ScoreCategoryKey = "technical" | "local_seo" | "content_structure" | "performance" | "crawl";
 

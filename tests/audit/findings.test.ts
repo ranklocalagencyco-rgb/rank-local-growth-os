@@ -18,7 +18,7 @@ const summary: SiteSummary = { homepageUrl: "https://example.co.uk/", homepageFi
 
 describe("deterministic findings", () => {
   it("versioned rule set", () => {
-    expect(AUDIT_RULES_VERSION).toBe("audit-rules/v3");
+    expect(AUDIT_RULES_VERSION).toBe("audit-rules/v4");
   });
 
   it("produces no page findings for a well-formed page", () => {

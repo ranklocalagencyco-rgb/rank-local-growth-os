@@ -25,7 +25,7 @@ class MemoryPerformanceStore implements PerformanceStore {
   loseNextClaim = false;
 
   constructor(run: Partial<WebsiteAuditRun> = {}) {
-    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "completed", website_url: "https://example-roofing.co.uk", canonical_domain: "example-roofing.co.uk", crawler_version: "audit-crawler/v3", rules_version: "audit-rules/v3", started_at: at, completed_at: at, failed_at: null, pages_attempted: 5, pages_succeeded: 5, pages_failed: 0, error_summary: null, site_summary_json: { homepageFinalUrl: homepage }, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
+    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: "job-1", requested_by: null, status: "completed", website_url: "https://example-roofing.co.uk", canonical_domain: "example-roofing.co.uk", crawler_version: "audit-crawler/v3", rules_version: "audit-rules/v3", started_at: at, completed_at: at, failed_at: null, blocked_at: null, pages_attempted: 5, pages_succeeded: 5, pages_failed: 0, error_summary: null, site_summary_json: { homepageFinalUrl: homepage }, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
   }
   async getRun() { return this.run; }
   async enqueue(input: { type: string; idempotencyKey: string }) { if (!this.jobs.some((job) => job.idempotencyKey === input.idempotencyKey)) this.jobs.push({ type: input.type, idempotencyKey: input.idempotencyKey }); }
@@ -111,7 +111,7 @@ describe("performance audit job", () => {
     expect(provider.requests.map((request) => [request.strategy, request.url])).toEqual([["mobile", homepage], ["desktop", homepage]]);
     expect(provider.requests.every((request) => request.timeoutMs <= 35_000 && request.timeoutMs >= 10_000)).toBe(true);
     expect(store.observations.map((observation) => [observation.strategy, observation.status, observation.attempts, observation.performance_score])).toEqual([["mobile", "succeeded", 1, 61], ["desktop", "succeeded", 1, 93]]);
-    expect(store.jobs).toEqual([{ type: "audit.score", idempotencyKey: `audit.score:${runId}:audit-score/v1` }]);
+    expect(store.jobs).toEqual([{ type: "audit.score", idempotencyKey: `audit.score:${runId}:audit-score/v2` }]);
     expect(store.activity).toEqual([`audit.performance_completed:${runId}`]);
   });
 
@@ -215,6 +215,18 @@ describe("performance audit job", () => {
     expect(await runPerformanceAudit(payload, context(), deps(store, null))).toEqual({ status: "completed" });
     expect(store.observations).toEqual([]);
     expect(store.jobs.map((job) => job.type)).toEqual(["audit.score"]);
+  });
+
+  it("measures a blocked audit like a completed one: the provider, not our crawler, fetches the page, then the score is enqueued once", async () => {
+    const provider = scriptedProvider(["ok", "ok"]);
+    const store = new MemoryPerformanceStore({ status: "blocked", site_summary_json: { homepageUrl: "https://example-roofing.co.uk", homepageFinalUrl: "https://example-roofing.co.uk/", homepageStatus: 200, crawlBlocked: true } });
+    let outcome = await runPerformanceAudit(payload, context(), deps(store, provider));
+    while (outcome.status === "continue") outcome = await runPerformanceAudit(payload, context(), deps(store, provider));
+    expect(outcome).toEqual({ status: "completed" });
+    expect(provider.requests.map((request) => [request.strategy, request.url])).toEqual([["mobile", "https://example-roofing.co.uk/"], ["desktop", "https://example-roofing.co.uk/"]]);
+    expect(store.observations.map((observation) => observation.status)).toEqual(["succeeded", "succeeded"]);
+    expect(store.jobs).toEqual([{ type: "audit.score", idempotencyKey: `audit.score:${runId}:audit-score/v2` }]);
+    expect(store.run?.status).toBe("blocked");
   });
 
   it("does nothing for a failed audit, retries while the audit is unfinished, and rejects an unknown run", async () => {

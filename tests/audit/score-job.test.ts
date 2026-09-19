@@ -6,7 +6,7 @@ import { AUDIT_SCORE_VERSION } from "@/audit/score/rules";
 import type { WebsiteAuditPage, WebsiteAuditRun, WebsiteAuditScore, WebsitePerformanceObservation } from "@/db/types";
 import { NonRetryableJobError } from "@/jobs/processor";
 import type { AuditScoreInsert, ScoreStore } from "@/performance/store";
-import { scoreInput, strongPerformance, strongTradesSite, weakPerformance } from "./score-fixtures";
+import { page, scoreInput, strongPerformance, strongTradesSite, weakPerformance } from "./score-fixtures";
 
 // audit.score against an in-memory store: insert-if-absent, version stability, no-op re-run, run-state guards.
 
@@ -23,7 +23,7 @@ class MemoryScoreStore implements ScoreStore {
 
   constructor(public pages: WebsiteAuditPage[], public observations: WebsitePerformanceObservation[], run: Partial<WebsiteAuditRun> = {}) {
     const input = scoreInput(pages, observations);
-    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: null, requested_by: null, status: "completed", website_url: "https://example-roofing.co.uk", canonical_domain: "example-roofing.co.uk", crawler_version: "audit-crawler/v3", rules_version: "audit-rules/v3", started_at: at, completed_at: at, failed_at: null, pages_attempted: pages.length, pages_succeeded: pages.length, pages_failed: 0, error_summary: null, site_summary_json: input.run.site_summary_json, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
+    this.run = { id: runId, workspace_id: workspaceId, prospect_id: prospectId, job_id: null, requested_by: null, status: "completed", website_url: "https://example-roofing.co.uk", canonical_domain: "example-roofing.co.uk", crawler_version: "audit-crawler/v3", rules_version: "audit-rules/v3", started_at: at, completed_at: at, failed_at: null, blocked_at: null, pages_attempted: pages.length, pages_succeeded: pages.length, pages_failed: 0, error_summary: null, site_summary_json: input.run.site_summary_json, crawl_state_json: {}, retention_class: "audit_evidence", created_at: at, updated_at: at, ...run };
   }
   async getRun() { return this.run; }
   async listPages() { return this.pages; }
@@ -47,13 +47,13 @@ describe("audit score job", () => {
     const store = new MemoryScoreStore(strongTradesSite(), strongPerformance(true));
     expect(await runAuditScore(payload, context(), deps(store))).toEqual({ status: "completed" });
     expect(store.scores).toHaveLength(1);
-    expect(store.scores[0]).toMatchObject({ workspace_id: workspaceId, prospect_id: prospectId, audit_run_id: runId, scoring_version: "audit-score/v1", score_status: "complete", overall_score: 99.49, technical_score: 25, local_seo_score: 25, content_structure_score: 20, performance_score: 19.49, crawl_score: 10, evaluated_weight: 100, evidence_coverage: 100, calculated_at: at });
+    expect(store.scores[0]).toMatchObject({ workspace_id: workspaceId, prospect_id: prospectId, audit_run_id: runId, scoring_version: "audit-score/v2", score_status: "complete", overall_score: 99.49, technical_score: 25, local_seo_score: 25, content_structure_score: 20, performance_score: 19.49, crawl_score: 10, evaluated_weight: 100, evidence_coverage: 100, calculated_at: at });
     const breakdown = store.scores[0].breakdown_json as { scoringVersion: string; categories: Record<string, { rules: Record<string, { status: string; points: number; max: number }> }>; inputs: { observationIds: string[] } };
-    expect(breakdown.scoringVersion).toBe("audit-score/v1");
+    expect(breakdown.scoringVersion).toBe("audit-score/v2");
     expect(breakdown.categories.technical.rules.https).toMatchObject({ status: "pass", points: 4, max: 4 });
     expect(breakdown.inputs.observationIds).toEqual(["obs-desktop", "obs-mobile"]);
-    expect(store.activity).toEqual([`audit.scored:${runId}:audit-score/v1`]);
-    expect(scoreJobIdempotencyKey(runId, AUDIT_SCORE_VERSION)).toBe(`audit.score:${runId}:audit-score/v1`);
+    expect(store.activity).toEqual([`audit.scored:${runId}:audit-score/v2`]);
+    expect(scoreJobIdempotencyKey(runId, AUDIT_SCORE_VERSION)).toBe(`audit.score:${runId}:audit-score/v2`);
   });
 
   it("is a no-op when re-run: the stored score is never recalculated, even if the evidence rows changed since", async () => {
@@ -67,13 +67,13 @@ describe("audit score job", () => {
     expect(store.events).toHaveLength(1);
   });
 
-  it("leaves a score written under another scoring version untouched and adds its own beside it", async () => {
+  it("leaves a stored audit-score/v1 row byte-identical and adds the audit-score/v2 row beside it", async () => {
     const store = new MemoryScoreStore(strongTradesSite(), strongPerformance(true));
-    const older: WebsiteAuditScore = { id: "score-old", workspace_id: workspaceId, prospect_id: prospectId, audit_run_id: runId, scoring_version: "audit-score/v0", score_status: "complete", overall_score: 12.34, technical_score: 1, local_seo_score: 2, content_structure_score: 3, performance_score: 4, crawl_score: 2.34, evaluated_weight: 100, evidence_coverage: 100, breakdown_json: { scoringVersion: "audit-score/v0" }, calculated_at: "2026-01-01T00:00:00.000Z", retention_class: "audit_evidence", created_at: "2026-01-01T00:00:00.000Z" };
+    const older: WebsiteAuditScore = { id: "score-old", workspace_id: workspaceId, prospect_id: prospectId, audit_run_id: runId, scoring_version: "audit-score/v1", score_status: "complete", overall_score: 12.34, technical_score: 1, local_seo_score: 2, content_structure_score: 3, performance_score: 4, crawl_score: 2.34, evaluated_weight: 100, evidence_coverage: 100, breakdown_json: { scoringVersion: "audit-score/v0" }, calculated_at: "2026-01-01T00:00:00.000Z", retention_class: "audit_evidence", created_at: "2026-01-01T00:00:00.000Z" };
     store.scores.push(older);
     const before = JSON.stringify(older);
     await runAuditScore(payload, context(), deps(store));
-    expect(store.scores.map((score) => score.scoring_version)).toEqual(["audit-score/v0", "audit-score/v1"]);
+    expect(store.scores.map((score) => score.scoring_version)).toEqual(["audit-score/v1", "audit-score/v2"]);
     expect(JSON.stringify(store.scores[0])).toBe(before);
   });
 
@@ -88,6 +88,16 @@ describe("audit score job", () => {
     const store = new MemoryScoreStore([], []);
     await runAuditScore(payload, context(), deps(store));
     expect(store.scores[0]).toMatchObject({ score_status: "insufficient_evidence", overall_score: null, evidence_coverage: 0 });
+  });
+
+  it("scores a blocked audit as audit-score/v2 insufficient_evidence with performance evidence only and no overall score", async () => {
+    const challenge = { detected: true, kind: "bot_challenge", confidence: "high", rule: "title_tiny_document", markerFamily: null, signals: ["title:one_moment_please"], detectorVersion: "challenge-detector/v1", url: "https://example-roofing.co.uk/", httpStatus: 200, title: "One moment, please...", wordCount: 8, internalLinkCount: 0, h1Count: 0, detectedAt: at };
+    const row = page("/", { title: null, meta_description: null, h1_count: 0, word_count: 0, canonical_url: null, has_viewport: false, json_ld_count: 0, schema_types: [], has_structured_data: false }, { renderingMode: "unknown", nap: null, challenge });
+    const store = new MemoryScoreStore([row], strongPerformance(false), { status: "blocked", blocked_at: at, completed_at: null, pages_succeeded: 0, pages_failed: 1, site_summary_json: { homepageUrl: "https://example-roofing.co.uk", homepageFinalUrl: "https://example-roofing.co.uk/", homepageStatus: 200, homepageRedirectChain: [], crawlBlocked: true, challenge } });
+    expect(await runAuditScore(payload, context(), deps(store))).toEqual({ status: "completed" });
+    expect(store.scores).toHaveLength(1);
+    expect(store.scores[0]).toMatchObject({ scoring_version: "audit-score/v2", score_status: "insufficient_evidence", overall_score: null, technical_score: null, local_seo_score: null, content_structure_score: null, crawl_score: null, performance_score: 19.36, evaluated_weight: 20, evidence_coverage: 16 });
+    expect(store.run?.status).toBe("blocked");
   });
 
   it("skips failed audits, retries unfinished ones and rejects unknown runs", async () => {

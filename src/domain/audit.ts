@@ -1,3 +1,4 @@
+import { readChallengeEvidence, type ChallengeKind } from "@/audit/challenge-detection";
 import { FINDING_TEXT } from "@/audit/findings";
 import { CATEGORY_ORDER, CATEGORY_WEIGHTS, type ScoreCategoryKey } from "@/audit/score/rules";
 import type { AuditFindingSeverity, AuditPageRole, AuditScoreStatus, JobRow, WebsiteAuditRun, WebsiteAuditScore, WebsitePerformanceObservation } from "@/db/types";
@@ -7,10 +8,21 @@ import type { AuditFindingSeverity, AuditPageRole, AuditScoreStatus, JobRow, Web
 export function auditStatusLabel(run: WebsiteAuditRun | null, job: JobRow | null): { headline: string; detail: string | null; tone: "good" | "warn" | "neutral" | "bad" } {
   if (!run) return { headline: "Not audited", detail: "Run a website audit to crawl the verified site and store evidence.", tone: "neutral" };
   if (run.status === "completed") return { headline: "Completed", detail: `${run.pages_succeeded} of ${run.pages_attempted} pages fetched.`, tone: "good" };
+  if (run.status === "blocked") return { headline: "Audit blocked", detail: "The site returned a browser verification/challenge page, so content-based audit checks were not evaluated.", tone: "warn" };
   if (run.status === "failed") return { headline: "Failed", detail: run.error_summary ?? job?.last_error ?? "The audit job failed.", tone: "bad" };
   if (run.status === "running") return { headline: "Running", detail: `${run.pages_attempted} page${run.pages_attempted === 1 ? "" : "s"} attempted so far.${job?.status === "failed" ? ` Last attempt failed and will retry: ${job.last_error ?? "unknown error"}.` : ""}`, tone: "neutral" };
   if (job?.status === "dead_letter") return { headline: "Failed", detail: job.last_error ?? "The audit job could not be started.", tone: "bad" };
   return { headline: "Queued", detail: "Waiting for a worker (npm run worker or POST /api/jobs/run).", tone: "neutral" };
+}
+
+const CHALLENGE_KIND_LABELS: Record<ChallengeKind, string> = { bot_challenge: "Bot challenge / browser verification", access_block: "Access blocked", interstitial: "Holding / interstitial page" };
+
+/** What the crawler recorded about a blocked run: detected type, URL and the signal codes. Null unless the run is blocked. Never HTML. */
+export function auditBlockedDetail(run: WebsiteAuditRun | null): { kindLabel: string; url: string; title: string | null; reason: string; signals: string[] } | null {
+  if (!run || run.status !== "blocked") return null;
+  const challenge = readChallengeEvidence(run.site_summary_json?.challenge);
+  if (!challenge) return { kindLabel: "Challenge page", url: run.website_url, title: null, reason: "No detection detail was stored.", signals: [] };
+  return { kindLabel: challenge.kind ? CHALLENGE_KIND_LABELS[challenge.kind] : "Challenge page", url: challenge.url || run.website_url, title: challenge.title, reason: `HTTP ${challenge.httpStatus ?? "?"} · ${challenge.wordCount} word${challenge.wordCount === 1 ? "" : "s"} · ${challenge.internalLinkCount} internal link${challenge.internalLinkCount === 1 ? "" : "s"} · rule ${challenge.rule ?? "unknown"} (${challenge.confidence} confidence)`, signals: challenge.signals };
 }
 
 export function severityTone(severity: AuditFindingSeverity): "good" | "warn" | "neutral" | "bad" {

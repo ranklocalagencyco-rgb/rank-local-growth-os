@@ -56,7 +56,8 @@ export async function runPerformanceAudit(payload: PerformanceAuditPayload, cont
   if (!run || run.prospect_id !== payload.prospectId) throw new NonRetryableJobError("Audit run not found");
   // Nothing to measure for a failed crawl. A crawl that is still running retries with backoff, bounded by max_attempts.
   if (run.status === "failed") return { status: "completed" };
-  if (run.status !== "completed") throw new Error("Website audit has not completed yet");
+  // `blocked` is terminal like `completed`: the crawl is over, and whatever evidence exists (possibly performance only) is scored.
+  if (run.status !== "completed" && run.status !== "blocked") throw new Error("Website audit has not completed yet");
 
   const followUp = { workspaceId, auditRunId: run.id, prospectId: run.prospect_id, traceId: context.job.trace_id };
   const provider = deps.getProvider();

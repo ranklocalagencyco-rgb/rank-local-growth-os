@@ -30,7 +30,7 @@ Applies to every handler registered in `src/jobs/app-registry.ts`. The queue is 
 
 ## Status transitions
 
-Runs move `queued → running → completed | failed`. Record `started_at`, `finished_at`, counters and `error_summary` on the run row; never leave a run `running` after a non-retryable failure.
+Runs move `queued → running → completed | failed`. Website audit runs have one more terminal state, `blocked` (the host answered with a bot-challenge page; `docs/AUDIT_RULES.md` §7): the job itself completes, so the queue never retries against that host. Record `started_at`, `finished_at`, counters and `error_summary` on the run row; never leave a run `running` after a non-retryable failure.
 
 ## Batch hygiene
 

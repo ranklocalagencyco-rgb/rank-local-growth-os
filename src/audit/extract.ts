@@ -12,7 +12,7 @@ import { normalizeDomain } from "@/domain/identifiers";
 // Deterministic HTML evidence extraction (RL-052/053/055/056/057). Input is HTML text; output is facts only.
 // No interpretation, no scoring, no LLM (ai/rules/no-llm-in-crawler.md).
 
-export const AUDIT_CRAWLER_VERSION = "audit-crawler/v3";
+export const AUDIT_CRAWLER_VERSION = "audit-crawler/v4";
 /** Stored on every page's evidence_json; rules that need v3 evidence check it so older rows are never judged by new rules. */
 export const EVIDENCE_VERSION = 3;
 

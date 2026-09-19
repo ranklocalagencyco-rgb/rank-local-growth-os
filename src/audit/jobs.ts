@@ -1,11 +1,12 @@
 import { z } from "zod";
 
-import { buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState, nextFrontierEntry, parseCrawlState, recordLinkContext, siteDomainOf, siteOrigin, summariseSite, type CrawlState } from "@/audit/crawler";
+import { blockedSiteSummary, buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState, nextFrontierEntry, parseCrawlState, recordLinkContext, siteDomainOf, siteOrigin, summariseSite, type CrawlState } from "@/audit/crawler";
 import { AUDIT_CRAWLER_VERSION } from "@/audit/extract";
 import { enqueueAuditFollowUp } from "@/audit/follow-up";
 import { AUDIT_SCORE_VERSION } from "@/audit/score/rules";
 import { AUDIT_RULES_VERSION, crossPageFindings, pageFindings, pageRuleContext, siteFindings, type FindingInput } from "@/audit/findings";
-import { buildLinkGraph } from "@/audit/site-evidence";
+import { readChallengeEvidence, type ChallengeEvidence } from "@/audit/challenge-detection";
+import { buildLinkGraph, isChallengePage } from "@/audit/site-evidence";
 import type { SafeFetcher, SafeFetchReason, SafeFetchResult } from "@/audit/safe-fetch";
 import { normalizeAuditUrl } from "@/audit/url";
 import type { AuditFindingInsert, AuditProspect, AuditStore } from "@/audit/store";
@@ -16,6 +17,9 @@ import { NonRetryableJobError, type JobContext, type JobOutcome, type JobRegistr
 // Website audit job (RL-051/061/062). Follows ai/rules/jobs-contract.md: idempotent, cursor persisted per page,
 // yields at the deadline, non-retryable failures mark the run failed, transient failures retry then fail on the last attempt.
 // Deterministic end to end; no LLM anywhere in this path (ai/rules/no-llm-in-crawler.md).
+// RL-067: a homepage answered with a high-confidence bot-challenge document ends the run as `blocked` (terminal, not failed):
+// one request, no robots/sitemap/link fetches afterwards, one operational finding, and the usual performance + score follow-up.
+// The job itself completes, so the queue never retries against a host that is challenging us. A later audit is a new run.
 
 export const WEBSITE_AUDIT_JOB = "audit.run";
 export const websiteAuditPayloadSchema = z.object({ auditRunId: z.string().uuid(), prospectId: z.string().uuid() });
@@ -58,7 +62,7 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
   // Performance evidence and the score are separate jobs, enqueued once the crawl has completed. Re-asserted here (idempotent
   // by key) so a crash between the status flip and the enqueue can never leave a completed audit without its follow-up.
   const enqueueFollowUp = () => enqueueAuditFollowUp(store, { workspaceId, auditRunId: run.id, prospectId: run.prospect_id, traceId: context.job.trace_id, performanceEnabled: deps.config.performanceProvider !== "none", scoringVersion: AUDIT_SCORE_VERSION });
-  if (run.status === "completed") {
+  if (run.status === "completed" || run.status === "blocked") {
     await enqueueFollowUp();
     return { status: "completed" };
   }
@@ -97,8 +101,28 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
         await persist({ errorSummary: `Retrying after ${outcome.message}` });
         throw new TransientAuditError(outcome.message);
       }
-      state.phase = "crawl";
+      // Persisted before finalising so a retry after a crash finishes from the stored row and never re-requests the homepage.
+      state.phase = outcome.kind === "blocked" ? "blocked" : "crawl";
       await persist({ errorSummary: null });
+    }
+
+    if (state.phase === "blocked") {
+      const pages = await store.listPages(run.id);
+      const blockedPage = pages.find((page) => page.page_role === "homepage" && isChallengePage(page)) ?? null;
+      const challenge: ChallengeEvidence | null = blockedPage ? readChallengeEvidence(blockedPage.evidence_json?.challenge) : null;
+      if (!blockedPage || !challenge) return failRun("Blocked audit has no stored challenge evidence.");
+      // Only the challenge row's own rule runs: no cross-page or site rule, because nothing about the website was observed.
+      const findings = pageFindings(blockedPage, null);
+      const rows: AuditFindingInsert[] = findings.map((finding) => ({ workspaceId, auditRunId: run.id, prospectId: run.prospect_id, pageId: finding.pageId, scope: finding.scope, code: finding.code, severity: finding.severity, evidence: finding.evidence, ruleVersion: AUDIT_RULES_VERSION }));
+      await store.insertFindings(rows);
+      const summary = blockedSiteSummary(state, challenge);
+      await store.updateRun(run.id, { status: "blocked", blockedAt: now().toISOString(), errorSummary: null, siteSummary: summary as unknown as Record<string, unknown>, crawlState: { ...state, frontier: [] } as unknown as Record<string, unknown>, pagesAttempted: counters.attempted, pagesSucceeded: counters.succeeded, pagesFailed: counters.failed });
+      const detail = { auditRunId: run.id, kind: challenge.kind, confidence: challenge.confidence, rule: challenge.rule, markerFamily: challenge.markerFamily, signals: challenge.signals, url: challenge.url };
+      await store.recordActivity({ workspaceId, prospectId: run.prospect_id, eventType: "audit.blocked", summary: "Website audit blocked: the site returned a browser-verification or challenge page, so content-based checks were not evaluated.", metadata: detail, idempotencyKey: `audit.blocked:${run.id}` });
+      await store.recordDomainEvent({ workspaceId, aggregateType: "website_audit_run", aggregateId: run.id, eventType: "audit.blocked", payload: { prospectId: run.prospect_id, ...detail, crawlerVersion: AUDIT_CRAWLER_VERSION, rulesVersion: AUDIT_RULES_VERSION }, idempotencyKey: `audit.blocked:${run.id}` });
+      await enqueueFollowUp();
+      context.logger.info("audit.blocked", detail);
+      return { status: "completed" };
     }
 
     if (state.phase === "crawl") {
@@ -114,11 +138,12 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
         const outcome = buildPageOutcome({ workspaceId, runId: run.id, prospectId: run.prospect_id, entry, result, state, fetchedAt: now().toISOString() });
         if (outcome.page) {
           await store.insertPage(outcome.page);
-          if (outcome.page.fetch_ok && (outcome.page.http_status ?? 0) < 400) counters.succeeded += 1;
+          // A challenge document on a secondary page is stored as provenance, counted as not fetched, and never followed (evidence is null).
+          if (!outcome.challengeExcluded && outcome.page.fetch_ok && (outcome.page.http_status ?? 0) < 400) counters.succeeded += 1;
           else counters.failed += 1;
           if (outcome.evidence) enqueueFrontier(state, outcome.evidence.internalLinks.map((url) => ({ url, via: "link" as const, from: entry.url })));
         }
-        context.logger.info("audit.page", { auditRunId: run.id, url: entry.url, status: result.status, reason: result.reason, attempted: counters.attempted, frontier: state.frontier.length });
+        context.logger.info("audit.page", { auditRunId: run.id, url: entry.url, status: result.status, reason: result.reason, challenge: outcome.challenge ? outcome.challenge.confidence : null, attempted: counters.attempted, frontier: state.frontier.length });
         await persist();
       }
       state.phase = "finalize";
@@ -144,7 +169,7 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
   }
 }
 
-type StartOutcome = { kind: "ok" } | { kind: "fail"; message: string } | { kind: "transient"; message: string };
+type StartOutcome = { kind: "ok" } | { kind: "blocked" } | { kind: "fail"; message: string } | { kind: "transient"; message: string };
 
 /** Homepage fetch, robots/sitemap discovery and initial frontier. The homepage must succeed or no useful audit can continue. */
 async function startCrawl(run: WebsiteAuditRun, state: CrawlState, fetcher: SafeFetcher, deps: AuditJobDependencies, context: Pick<JobContext, "job" | "logger">, counters: { attempted: number; succeeded: number; failed: number }, now: () => Date): Promise<StartOutcome> {
@@ -173,7 +198,13 @@ async function startCrawl(run: WebsiteAuditRun, state: CrawlState, fetcher: Safe
   counters.attempted += 1;
   if (outcome.page) {
     await deps.store.insertPage(outcome.page);
-    counters.succeeded += 1;
+    if (outcome.challengeExcluded) counters.failed += 1;
+    else counters.succeeded += 1;
+  }
+  // RL-067: the homepage is a challenge document. Stop here: no robots.txt, no sitemap, no links. The host has answered; respect it.
+  if (outcome.challengeExcluded && outcome.page) {
+    context.logger.info("audit.start.blocked", { auditRunId: run.id, siteDomain, kind: outcome.challenge?.kind ?? null, rule: outcome.challenge?.rule ?? null });
+    return { kind: "blocked" };
   }
   // Homepage link context must exist before any URL (sitemap or link) is enqueued so priorities and classification see it.
   if (outcome.evidence) recordLinkContext(state, outcome.evidence);

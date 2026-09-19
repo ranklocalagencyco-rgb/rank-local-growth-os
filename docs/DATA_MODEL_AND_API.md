@@ -249,8 +249,8 @@ unique (campaign_run_id, provider, provider_ref, search_category, search_locatio
 The first audit slice implements the crawl/evidence layer with these three tables (the logical `crawl_runs` / `evidence_items` / `audits` split above remains the target for scoring and AI layers):
 
 ```text
-website_audit_runs      id, workspace_id, prospect_id, job_id, requested_by, status (queued|running|completed|failed),
-                        website_url, canonical_domain, crawler_version, rules_version, started_at, completed_at, failed_at,
+website_audit_runs      id, workspace_id, prospect_id, job_id, requested_by, status (queued|running|completed|blocked|failed),
+                        website_url, canonical_domain, crawler_version, rules_version, started_at, completed_at, failed_at, blocked_at,
                         pages_attempted, pages_succeeded, pages_failed, error_summary, site_summary_json, crawl_state_json,
                         retention_class (audit_evidence)
                         unique partial index on (prospect_id) where status in ('queued','running')
@@ -269,7 +269,9 @@ website_audit_findings  scope (site|page), page_id, code, severity (info|low|med
 
 `site_summary_json` (run) — v1/v2 keys unchanged; v3 adds optional `evidenceVersion`, `galleryPagesFound`, `blogPagesFound`, `locationPages[]`, `servicePages[]`, `serviceLocationCombos[]`, `nap`, `schema`, `duplicateTitleGroups[]`, `duplicateMetaGroups[]`, `duplicateTitleMetaPairs[]`, `homepageLinkCount`, `pagesWithoutInboundLinks[]`, `internalRedirects[]`, `linksTruncatedOnAnyPage`. Full shapes, thresholds and the finding catalogue: `docs/AUDIT_RULES.md`.
 
-Events: `audit.requested`, `audit.completed`, `audit.failed`. Job type: `audit.run` with idempotency key `audit.run:<runId>`.
+`status = blocked` and `blocked_at` (migration 009, RL-067): the homepage was answered with a high-confidence bot-challenge / interstitial document, so the website was never crawled. Terminal; not a failure and not a completed crawl. `error_summary` stays null; the provenance is structured: `site_summary_json` then holds only `homepageUrl`, `homepageFinalUrl`, `homepageStatus`, `homepageRedirectChain`, `crawlBlocked: true` and `challenge {detected, kind, confidence, rule, markerFamily, signals[], detectorVersion, url, httpStatus, title, wordCount, internalLinkCount, h1Count, detectedAt}`. The same `challenge` object is stored on the page row at `evidence_json.challenge` whenever the detector matched (any confidence); on a high-confidence row every content column stays at its default. `site_summary_json.challengePages[] {path, kind}` lists secondary pages excluded for this reason on a completed run. No HTML is stored anywhere. The partial unique index still covers only `queued` and `running`, so a blocked run never prevents a new audit.
+
+Events: `audit.requested`, `audit.completed`, `audit.blocked`, `audit.failed`. Job type: `audit.run` with idempotency key `audit.run:<runId>`.
 
 `site_summary_json.crawlScope {pageCap, frontierRemaining}` is stored at finalisation since the audit score was added (absent on earlier runs).
 
@@ -290,7 +292,7 @@ website_performance_observations   one row per (audit run, provider, strategy, U
 
 website_audit_scores               insert-only, one row per (audit run, scoring version)
   id (deterministic)  workspace_id  prospect_id  audit_run_id
-  scoring_version (audit-score/v1)  score_status (complete|provisional|insufficient_evidence)
+  scoring_version (audit-score/v2; older rows keep audit-score/v1)  score_status (complete|provisional|insufficient_evidence)
   overall_score (null when insufficient_evidence)
   technical_score  local_seo_score  content_structure_score  performance_score  crawl_score   null = not evaluated
   evaluated_weight  evidence_coverage  breakdown_json  calculated_at  retention_class  created_at

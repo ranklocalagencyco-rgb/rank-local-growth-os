@@ -20,6 +20,7 @@ function runPatchToRow(patch: AuditRunPatch): Partial<WebsiteAuditRun> {
   if (patch.startedAt !== undefined) row.started_at = patch.startedAt;
   if (patch.completedAt !== undefined) row.completed_at = patch.completedAt;
   if (patch.failedAt !== undefined) row.failed_at = patch.failedAt;
+  if (patch.blockedAt !== undefined) row.blocked_at = patch.blockedAt;
   if (patch.pagesAttempted !== undefined) row.pages_attempted = patch.pagesAttempted;
   if (patch.pagesSucceeded !== undefined) row.pages_succeeded = patch.pagesSucceeded;
   if (patch.pagesFailed !== undefined) row.pages_failed = patch.pagesFailed;

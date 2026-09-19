@@ -134,6 +134,10 @@ describe("finding text catalogue", () => {
     const nap = { phones: [], emails: [], postcodes: [], addressCandidates: [], businessNames: [], localities: [], pagesWithPhone: 0, pagesWithEmail: 0, pagesWithAddressCandidate: 0, pagesEvaluated: 1 };
     const schema = { localBusinessPages: 1, organizationPages: 0, localBusinessTypes: ["RoofingContractor"], hasName: true, hasTelephone: false, hasAddress: false, addressLocality: null, areaServed: [], hasGeo: false, sameAs: [], hasAggregateRating: false, reviewCount: 0, localBusinessMissingFields: ["telephone", "address"] };
     for (const finding of siteFindings({ ...evaluated, locationPages: [], nap, schema }, [v3({ schema_types: ["RoofingContractor"] })])) emitted.add(finding.code);
+    // audit-rules/v4 (RL-067): operational challenge findings, read from stored detection provenance.
+    const challenge = (confidence: "high" | "medium") => ({ detected: true, kind: "bot_challenge", confidence, rule: confidence === "high" ? "strong_marker" : "phrase_weak_marker", markerFamily: null, signals: [], detectorVersion: "challenge-detector/v1", url: "https://example.co.uk/", httpStatus: 200, title: null, wordCount: 8, internalLinkCount: 0, h1Count: 0, detectedAt: "2026-09-19T10:00:00.000Z" });
+    for (const finding of pageFindings(v3({}, { challenge: challenge("high") }))) emitted.add(finding.code);
+    for (const finding of pageFindings(v3({}, { challenge: challenge("medium") }))) emitted.add(finding.code);
     expect([...emitted].sort()).toEqual([...ALL_FINDING_CODES].sort());
     for (const code of emitted) {
       expect(FINDING_TEXT[code].title.length).toBeGreaterThan(0);

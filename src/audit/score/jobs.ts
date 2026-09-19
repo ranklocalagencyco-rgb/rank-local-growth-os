@@ -23,7 +23,8 @@ export async function runAuditScore(payload: AuditScorePayload, context: Pick<Jo
   const run = await store.getRun(workspaceId, payload.auditRunId);
   if (!run || run.prospect_id !== payload.prospectId) throw new NonRetryableJobError("Audit run not found");
   if (run.status === "failed") return { status: "completed" };
-  if (run.status !== "completed") throw new Error("Website audit has not completed yet");
+  // `blocked` is terminal like `completed`: the crawl is over, and whatever evidence exists (possibly performance only) is scored.
+  if (run.status !== "completed" && run.status !== "blocked") throw new Error("Website audit has not completed yet");
   if (await store.getScore(run.id, AUDIT_SCORE_VERSION)) return { status: "completed" };
 
   const [pages, observations] = await Promise.all([store.listPages(run.id), store.listObservations(run.id)]);

@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import { calculateAuditScore, type AuditScoreResult } from "@/audit/score/calculate";
 import { clientRenderedShell, observation, scoreInput, shellPerformance, strongPerformance, strongTradesSite, weakPerformance, weakSite } from "./score-fixtures";
 
-// Golden fixtures for audit-score/v1. Expected points were derived by hand from the rule table in docs/AUDIT_SCORE.md; a change
+// Golden fixtures, first derived for audit-score/v1 and unchanged under audit-score/v2: v2 (RL-067) only adds handling for challenge
+// evidence, which none of these sites carries, so every number below is the v1 number. Expected points were derived by hand from the rule table in docs/AUDIT_SCORE.md; a change
 // here means the formula changed and needs a new scoring version, not an updated expectation.
 
 const points = (result: AuditScoreResult, category: keyof AuditScoreResult["breakdown"]["categories"]) => Object.fromEntries(Object.entries(result.breakdown.categories[category].rules).map(([code, rule]) => [code, rule.status === "not_evaluated" ? "n/e" : rule.points]));
 
-describe("audit-score/v1 golden fixtures", () => {
+describe("audit-score/v2 golden fixtures (numerically identical to audit-score/v1)", () => {
   it("1. strong conventional trades website with field data: every rule passes except the linear Lighthouse scores", () => {
     const result = calculateAuditScore(scoreInput(strongTradesSite(), strongPerformance(true)));
     expect(points(result, "crawl")).toEqual({ homepage_reachable: 2, homepage_indexable: 4, robots_allows_crawling: 2, pages_indexable: 1, pages_fetch_success: 1 });
@@ -18,7 +19,7 @@ describe("audit-score/v1 golden fixtures", () => {
     // 6 × 0.92 = 5.52 and 3 × 0.99 = 2.97; all banded lab and field metrics are in the "good" band.
     expect(points(result, "performance")).toEqual({ lighthouse_performance_mobile: 5.52, lighthouse_performance_desktop: 2.97, lcp_mobile_lab: 3, cls_mobile_lab: 2, tbt_mobile_lab: 2, field_lcp: 2, field_inp: 1, field_cls: 1 });
     expect(result.categoryScores).toEqual({ technical: 25, local_seo: 25, content_structure: 20, performance: 19.49, crawl: 10 });
-    expect(result).toMatchObject({ scoringVersion: "audit-score/v1", status: "complete", overallScore: 99.49, evaluatedWeight: 100, evidenceCoverage: 100 });
+    expect(result).toMatchObject({ scoringVersion: "audit-score/v2", status: "complete", overallScore: 99.49, evaluatedWeight: 100, evidenceCoverage: 100 });
   });
 
   it("2. technically weak website: measured failures score zero and stay in the denominator", () => {

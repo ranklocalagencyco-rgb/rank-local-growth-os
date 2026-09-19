@@ -8,6 +8,7 @@ export type AuditRunPatch = Partial<{
   startedAt: string | null;
   completedAt: string | null;
   failedAt: string | null;
+  blockedAt: string | null;
   pagesAttempted: number;
   pagesSucceeded: number;
   pagesFailed: number;

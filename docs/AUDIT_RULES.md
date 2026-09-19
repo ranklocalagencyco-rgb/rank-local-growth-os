@@ -1,6 +1,6 @@
 # Website audit: evidence and rules catalogue
 
-Versions in force: crawler `audit-crawler/v3` (`src/audit/extract.ts`), rules `audit-rules/v3` (`src/audit/findings.ts`). Both are stamped on every `website_audit_runs` row; every finding row carries `rule_version`. Rows written by older versions stay readable: every v3 field is optional and every v3 rule checks `evidence_json.evidenceVersion >= 3` before it can fire, so re-finalising an old run never emits new codes.
+Versions in force: crawler `audit-crawler/v4` (`src/audit/extract.ts`), rules `audit-rules/v4` (`src/audit/findings.ts`), challenge detector `challenge-detector/v1` (`src/audit/challenge-detection.ts`). v4 of the crawler and rules adds only bot-challenge handling (§7); page evidence is still `evidenceVersion` 3 and every v3 rule is unchanged. Both are stamped on every `website_audit_runs` row; every finding row carries `rule_version`. Rows written by older versions stay readable: every v3 field is optional and every v3 rule checks `evidence_json.evidenceVersion >= 3` before it can fire, so re-finalising an old run never emits new codes.
 
 Everything in this document is deterministic: HTML is parsed with cheerio, values are matched with fixed regular expressions and thresholds, and no LLM is involved anywhere in the fetch, parse or rules path (`ai/rules/no-llm-in-crawler.md`).
 
@@ -39,12 +39,15 @@ v1/v2 keys are unchanged (`redirectChain`, `externalHosts`, `ctaSamples`, `jsonL
 | `nap` | `phones[] {raw, digits, sources}`, `emails[]`, `postcodes[]`, `addressCandidates[] {text, postcode, source}`, `businessNames[] {value, source}`, `hasContactForm`. Sources: `tel_link`, `mailto_link`, `text:header|footer|main`, `address_element`, `og_site_name`, `copyright`, `logo_alt` |
 | `schema` | `localBusiness {types, name, telephone, address, areaServed, geo, sameAs, openingHours, priceRange}`, `organization {name, telephone, address, sameAs, logo}`, `aggregateRating`, `reviewCount`, `hasService`, `breadcrumbNames` |
 | `headingFingerprint` | sha1 of the lowercased H1/H2/H3 sequence; evidence only |
+| `challenge` (v4) | present only when the challenge detector matched (§7): `{detected, kind, confidence, rule, markerFamily, signals[], detectorVersion, url, httpStatus, title, wordCount, internalLinkCount, h1Count, detectedAt}`. With `confidence: "high"` the row is provenance only: every content column and every other evidence key stays at its default |
 
 NAP scope: UK phone formats (`+44`, national `0…`, 10–11 digits), UK postcodes, English copyright lines. An address candidate is an `<address>` element, or the deepest element (≤200 chars) containing a postcode and at least two comma-separated parts. No canonical NAP is chosen; values and provenance are stored as observed.
 
 ## 3. Site-level evidence (`website_audit_runs.site_summary_json`)
 
 v1/v2 keys unchanged. v3 adds `evidenceVersion`, `galleryPagesFound`, `blogPagesFound`, `locationPages[] {path, locality, hub}`, `servicePages[] {path, service}`, `serviceLocationCombos[]`, `nap` (values aggregated across pages with page counts and sources), `schema` (LocalBusiness/Organization presence, `hasName`, `hasTelephone`, `hasAddress`, `areaServed`, `hasGeo`, `sameAs`, `hasAggregateRating`, `reviewCount`, `localBusinessMissingFields`), `duplicateTitleGroups`, `duplicateMetaGroups`, `duplicateTitleMetaPairs`, `homepageLinkCount`, `pagesWithoutInboundLinks` (crawl scope only), `internalRedirects[] {requestedUrl, finalUrl, linkedFrom}`, `linksTruncatedOnAnyPage`.
+
+v4 adds `challengePages[] {path, kind}` on a completed run (secondary pages excluded as challenge documents), and on a `blocked` run replaces the whole summary with `homepageUrl`, `homepageFinalUrl`, `homepageStatus`, `homepageRedirectChain`, `crawlBlocked: true` and `challenge` (§7): no other site fact is derived, because none was measured on the real website.
 
 Since the audit score was added, finalisation also stores `crawlScope {pageCap, frontierRemaining}`: the page cap in force and how many discovered URLs were still queued when the crawl stopped. It is evidence only (no finding reads it); the score uses it to tell "no such page" from "stopped at the page cap" ([`AUDIT_SCORE.md`](AUDIT_SCORE.md) §5). Runs finalised earlier do not have it.
 
@@ -79,9 +82,13 @@ Severity is fixed per rule (except `page_noindex`, high on the homepage). "Conte
 | `location_pages_missing` | site | low | no non-hub `location` page among crawled pages (content rule) | v3 |
 | `nap_phone_missing` | site | medium | no phone from any source on any crawled page | v3 |
 | `nap_address_missing` | site | medium | no address candidate, schema address or schema postcode on any crawled page | v3 |
+| `challenge_page_detected` | page | info | high-confidence challenge document (§7). Operational, not an SEO defect. The only finding that row can produce; on the homepage it is the only finding of the run | v4 |
+| `challenge_page_suspected` | page | info | medium-confidence detection (§7). The page is evaluated normally and keeps its other findings | v4 |
 | `localbusiness_schema_incomplete` | site | low | LocalBusiness type present but name, telephone or a full address (street + locality + postcode) missing from every LocalBusiness node; never emitted together with `no_localbusiness_schema` | v3 |
 
 Deterministic finding ids are `(run, page or "site", code)`, so a site-scope code appears once per run; every rule that can fire more than once is page-scope with the group in its evidence.
+
+While any crawled URL of a run is a high-confidence challenge document, the page-type absence rules `no_contact_page_detected`, `no_service_pages_detected` and `location_pages_missing` are not emitted: the challenged URL may be that page, so its absence was not measured.
 
 ## 6. Documented limitations
 
@@ -90,3 +97,53 @@ Deterministic finding ids are `(run, page or "site", code)`, so a site-scope cod
 - Orphan-like pages and homepage coverage are judged within the crawl scope (`AUDIT_MAX_PAGES`, `MAX_FRONTIER`), never across the whole site.
 - NAP extraction is UK/English-specific (postcode and phone formats, prepositions, `and`/`&` splitting); lengths are UTF-16 code units and word counts undercount CJK text.
 - `og:type` is never used as a signal: WordPress SEO plugins emit `article` on every page.
+
+## 7. Bot-challenge and interstitial detection (`src/audit/challenge-detection.ts`, RL-067)
+
+Some hosts answer an unknown client with a browser-verification, challenge or holding document and HTTP 200 instead of the website. Auditing that document would produce findings and a score about the wrong thing (seen live on 2026-09-19: "One moment, please...", 8 words, no links). The detector is a pure function over the response HTML and the counts the extractor already produced. No LLM, no network, no headers (`SafeFetchResult` does not expose them). It **detects and stops**: nothing in the crawler solves a CAPTCHA, executes challenge scripts, alters its `User-Agent`, rotates addresses or otherwise tries to get past the host's decision.
+
+### 7.1 Signals
+
+| Class | Matched against | Values |
+|---|---|---|
+| Strong marker (challenge-only vendor internals) | raw HTML | Cloudflare `_cf_chl_opt`, `cf_chl_` / `cf-chl-` (not `cf-chl-widget`), `/cdn-cgi/challenge-platform/…/orchestrate/`, `challenge-error-text`; Sucuri `sucuri_cloudproxy_js`; Imperva `_Incapsula_Resource?CWUDNSAI` or "Incapsula incident ID"; DataDome `captcha-delivery.com`; PerimeterX `px-captcha`; SiteGround `/.well-known/sgcaptcha/` |
+| Weak marker (also found on ordinary pages) | raw HTML | `/cdn-cgi/challenge-platform/` (Cloudflare injects its JavaScript-detection script into normal pages), Turnstile / reCAPTCHA / hCaptcha widgets, `<meta http-equiv="refresh">` |
+| Strong title | the whole normalised title (lowercase, whitespace collapsed, trailing dots removed) must equal the phrase | just a moment · one moment, please · checking your browser · verify/verifying you are human · human verification · attention required! \| cloudflare · security check · ddos-guard · robot check / are you a robot / bot verification |
+| Weak title (recorded only, never decides) | same | please wait · access denied |
+| Body phrase | document text without scripts and styles, `<noscript>` included | checking your browser / if the site connection is secure · verify/verifying/confirm you are human · enable javascript and cookies to continue · needs to review the security of your connection · complete the security check · your request is being verified · your browser will redirect · not a robot |
+| Structural gate | extractor counts | `wordCount ≤ 80` **and** `internalLinkCount ≤ 2`. "Tiny document" = `wordCount ≤ 20`, 0 internal links, no H1 |
+
+Deliberately not strong markers, because vendors add them to real pages: Imperva's bare `_Incapsula_Resource?SWJIYLWA` sensor, PerimeterX `_pxAppId`, DataDome `tags.js`, Turnstile's runtime `cf-chl-widget-*` ids.
+
+### 7.2 Decision table (first match wins)
+
+| # | Rule code | Condition | Confidence | Effect |
+|---|---|---|---|---|
+| 1 | `strong_marker` | any strong marker. **No structural gate**: some vendor documents exceed it | high | page excluded; homepage → run `blocked` |
+| 2 | `title_tiny_document` | gate + strong title + tiny document | high | same |
+| 3 | `title_corroborated` | gate + strong title + (a body phrase or a weak marker) | high | same |
+| 4 | `phrase_weak_marker` | gate + a body phrase + a weak marker | medium | recorded; `challenge_page_suspected` (info); page evaluated normally; never blocks |
+| 5 | `title_only` | gate + strong title, nothing else | low | recorded in `evidence_json.challenge` only |
+| — | — | anything else | not detected | nothing stored |
+
+Heuristic signals (rules 2–5) are only read inside the structural gate. Consequently none of these is ever a detection on its own: a low word count, a weak title, a CAPTCHA/Turnstile widget, a meta refresh, Cloudflare's generic script path, or verification wording. Ordinary sparse brochure sites, WordPress homepages behind Cloudflare, client-rendered shells (still handled by the rendering classifier, §2), maintenance pages, cookie-consent pages and pages that merely say "please wait" are covered by tests as non-detections.
+
+`kind`: `bot_challenge` when a strong marker, a verification phrase or a verification title matched; otherwise `access_block` for an access-denied title; otherwise `interstitial`. Confidence is fixed by the rule, never a probability.
+
+### 7.3 Crawler behaviour
+
+**Homepage, high confidence.** The page row is stored (HTTP facts + `evidence_json.challenge`; no content columns). The job does **not** request robots.txt or a sitemap and builds no frontier, so the host receives exactly one request. `crawl_state_json.phase = "blocked"` is persisted before finalising, so a retry after a crash finishes from the stored row without another request. The run gets status `blocked`, `blocked_at`, the blocked summary (§3) and exactly one finding, `challenge_page_detected`; `error_summary` stays null. Activity and domain event `audit.blocked` are recorded once. The job completes, so the queue never retries. The usual follow-up (`audit.performance`, then `audit.score`) is enqueued exactly once: PageSpeed is fetched by Google, not by our crawler, and its evidence stands on its own ([`AUDIT_SCORE.md`](AUDIT_SCORE.md) §5.6).
+
+**Any other page, high confidence.** The row is stored as provenance and counted in `pages_failed`; `isHtmlSuccess` is false for it, so the summary, link graph, NAP/schema aggregation, every finding rule and every score ratio ignore it; its links are never enqueued. The crawl continues over the remaining frontier and the run completes normally, with `site_summary_json.challengePages` listing the excluded paths. Only the homepage can block a run in this version.
+
+**Medium / low.** No change to crawling, evidence or status.
+
+**Retry.** A blocked run is terminal. A later audit is a new run requested by an operator; nothing is retried automatically.
+
+### 7.4 Limitations
+
+- Marker and phrase lists are finite and English-only; an unknown vendor is caught only by rules 2–3. A challenge document larger than the gate with no known internal is not detected.
+- A challenge served with HTTP 403/503 is outside this rule: the homepage then fails the run ("Homepage returned HTTP 403") and other pages are failed pages, exactly as before. Tracked as RL-069.
+- Response headers (`cf-mitigated`, vendor cookies) are not available to the detector.
+- A host that challenges only some secondary pages yields a completed audit on the rest; site-wide escalation is tracked as RL-068.
+- The SC Roofing fixture is a reconstruction from the facts that run stored (title, status, word, link and H1 counts), because HTML is never persisted.
