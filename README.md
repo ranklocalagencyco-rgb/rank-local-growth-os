@@ -19,7 +19,7 @@ npm run lint
 npm run build
 ```
 
-Apply the migrations in `supabase/migrations/` in order (`001` through `008`) and then `supabase/seed.sql` through the Supabase SQL editor or Supabase CLI. Migrations are forward-only; rollback should be performed through a reviewed, environment-specific reverse migration.
+Migrations live in `supabase/migrations/` (`001` through `008`) and are deployed with the Supabase CLI: validate locally (`bash ai/scripts/quality-gate.sh --with-migrations`), run `npx supabase db push --dry-run` and confirm it proposes only the new migration, then `npx supabase db push`. Do not paste migrations into the SQL editor or edit `supabase_migrations.schema_migrations` by hand: the remote history is aligned with this directory and must stay that way. `supabase/seed.sql` is applied once per environment. Migrations are forward-only; rollback should be performed through a reviewed, environment-specific reverse migration.
 
 ## Website audits (prospect → bounded crawl → evidence → findings)
 

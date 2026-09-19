@@ -10,7 +10,7 @@ related: ["rank-local-architecture", "quality-gate"]
 # validate-migration
 
 ## Purpose
-Migrations are applied by hand in the Supabase SQL editor and nothing in the test suite touches Postgres, so a broken migration blocks the whole feature. This skill makes every migration idempotent, complete (RLS, grants, types, docs) and locally proven.
+Migrations are deployed to the linked Supabase project with `npx supabase db push` and nothing in the test suite touches Postgres, so a broken migration blocks the whole feature. This skill makes every migration idempotent, complete (RLS, grants, types, docs) and locally proven.
 
 ## When to use
 Any change under `supabase/migrations/`, and any code change that needs a new table, column, index, function or policy.
@@ -24,14 +24,14 @@ Any change under `supabase/migrations/`, and any code change that needs a new ta
 6. Natural unique keys for idempotent upserts; indexes named `<table>_<purpose>_idx`, workspace-scoped, `desc` on time columns; `updated_at` trigger via `set_updated_at()` where the table has `updated_at`.
 7. Our own measurements are retained; provider-restricted content carries `expires_at`/`retention_class` and is cleared by a purge function.
 8. Update `src/db/types.ts` (row type + `Database` map), the README migration range (`001 through NNN`), `docs/DATA_MODEL_AND_API.md`, and any UI hint that names the last required migration.
-9. Never run `supabase db push` against the linked project: 001–005 were applied by hand and are absent from the remote history table, so push would replay them.
+9. Deploy only through the CLI migration flow, after local validation and review: `npx supabase db push --dry-run` must propose exactly the new migration(s) and nothing else; then `npx supabase db push`. Never paste a migration into the SQL editor and never edit `supabase_migrations.schema_migrations` by hand: the remote history was repaired to match this directory and must stay aligned. If the dry run proposes anything unexpected, stop and report.
 
 ## Procedure
 1. Copy `ai/examples/migration-template.sql`, rename to the next number, fill in tables/columns/indexes/RLS/grants.
 2. Add the TypeScript row types and `Database` entries; add store code with deterministic ids and `ignoreDuplicates` upserts.
 3. Validate locally: `bash ai/scripts/validate-migration.sh` (starts `postgres:16` in Docker, applies `ai/scripts/supabase-stubs.sql`, then every migration in order plus `supabase/seed.sql`, re-applies the newest file to prove idempotency, prints the new tables, removes the container).
 4. If the schema is needed by a running feature, confirm application through the project's REST endpoint (`GET /rest/v1/<table>?select=id&limit=1` with the service role key returns 200, not 404/400) without printing keys.
-5. Hand over: tell the user which file to run in the SQL editor, or `npx supabase db query --linked -f supabase/migrations/NNN_*.sql` with `SUPABASE_ACCESS_TOKEN` exported. Report "not applied" states plainly.
+5. Deploy per non-negotiable 9 once the operator has reviewed the change (`SUPABASE_ACCESS_TOKEN` exported; report variable names only). Confirm with `npx supabase migration list`. Report "not applied" states plainly.
 
 ## Verification
 `bash ai/scripts/validate-migration.sh` exits 0 and shows the expected tables; `ai/checklists/migration.md` all ticked; `bash ai/scripts/quality-gate.sh` passes.
