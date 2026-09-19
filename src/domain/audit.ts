@@ -38,6 +38,10 @@ export function pageRoleLabel(role: AuditPageRole): string {
       return "Contact";
     case "testimonials":
       return "Testimonials";
+    case "gallery":
+      return "Gallery";
+    case "blog":
+      return "Blog";
     default:
       return "Other";
   }

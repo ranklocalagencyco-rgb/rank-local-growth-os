@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { APP_SHELL_MAX_WORDS, classifyRenderingMode, extractPageEvidence, type RenderingSignals } from "@/audit/extract";
-import { ALL_FINDING_CODES, CONTENT_DEPENDENT_PAGE_CODES, CONTENT_DEPENDENT_SITE_CODES, FINDING_TEXT, pageFindings, renderingModeOf, siteFindings, type PageForRules, type SiteSummary } from "@/audit/findings";
+import { ALL_FINDING_CODES, CONTENT_DEPENDENT_PAGE_CODES, CONTENT_DEPENDENT_SITE_CODES, crossPageFindings, FINDING_TEXT, pageFindings, renderingModeOf, siteFindings, type PageForRules, type SiteSummary } from "@/audit/findings";
 import { findingLabel, findingSummary } from "@/domain/audit";
 
 // Deterministic app-shell detection and its effect on findings. No JavaScript is executed anywhere in this path.
@@ -20,7 +20,7 @@ const sparseWithAnalytics = `<html><head><title>Thanks</title><script async src=
 const hydratedServerPage = `<html><head><title>Roofers</title><script type="module" src="/assets/index-abc123.js"></script></head><body><div id="root"><h1>Roofers in Uxbridge</h1><p>${"word ".repeat(80)}</p><a href="/services">Services</a><a href="/contact">Contact</a><a href="/about">About</a></div></body></html>`;
 
 function page(overrides: Partial<PageForRules> = {}): PageForRules {
-  return { id: "p1", requested_url: "https://example.co.uk/", final_url: "https://example.co.uk/", path: "/", page_role: "homepage", fetch_ok: true, fetch_error: null, http_status: 200, content_type: "text/html; charset=utf-8", discovered_from: null, title: "T", meta_description: "D", h1_count: 0, h1_text: [], canonical_url: null, meta_robots: null, noindex: false, has_viewport: true, json_ld_count: 0, schema_types: [], has_structured_data: false, evidence_json: {}, ...overrides };
+  return { id: "p1", requested_url: "https://example.co.uk/", final_url: "https://example.co.uk/", path: "/", page_role: "homepage", fetch_ok: true, fetch_error: null, http_status: 200, content_type: "text/html; charset=utf-8", discovered_via: "link", discovered_from: null, title: "T", meta_description: "D", h1_count: 0, h1_text: [], h2_count: 0, canonical_url: null, meta_robots: null, noindex: false, has_viewport: true, word_count: 300, redirect_count: 0, json_ld_count: 0, schema_types: [], has_structured_data: false, evidence_json: {}, ...overrides };
 }
 
 const summary: SiteSummary = { homepageUrl: "https://example.co.uk/", homepageFinalUrl: "https://example.co.uk/", homepageHttps: true, homepageStatus: 200, homepageRedirectChain: [], robotsTxtReachable: true, robotsDisallowAll: false, sitemapReachable: false, sitemapUrlsDiscovered: 0, sitemapUrlsSameSite: 0, pagesCrawled: 1, pagesFailed: 0, servicePagesFound: 0, locationPagesFound: 0, contactPageFound: false, aboutPageFound: false, testimonialsPageFound: false, pagesWithLocalBusinessSchema: 0, schemaTypesSeen: [], brokenInternalLinks: 0, clientRenderedPages: 1, homepageRenderingMode: "client_rendered_likely", renderedContentEvaluated: false };
@@ -121,6 +121,19 @@ describe("finding text catalogue", () => {
     for (const finding of pageFindings(page({ http_status: 404, discovered_from: "https://example.co.uk/" }))) emitted.add(finding.code);
     for (const finding of siteFindings({ ...summary, homepageHttps: false, robotsTxtReachable: false, homepageRenderingMode: "server_rendered", renderedContentEvaluated: true }, [page({ evidence_json: { renderingMode: "server_rendered" } })])) emitted.add(finding.code);
     for (const finding of siteFindings(summary, [page({ evidence_json: { renderingMode: "client_rendered_likely" } })])) emitted.add(finding.code);
+    // audit-rules/v3: page thresholds, redirects, duplicates, homepage coverage, NAP and schema completeness.
+    const v3 = (overrides: Partial<PageForRules>, evidence: Record<string, unknown> = {}) => page({ evidence_json: { evidenceVersion: 3, renderingMode: "server_rendered", ...evidence }, ...overrides });
+    for (const finding of pageFindings(v3({ title: "Tiny", meta_description: "d", word_count: 5, h1_count: 1, h1_text: [] }, { titleLength: 4, metaDescriptionLength: 1, h1EmptyCount: 1 }))) emitted.add(finding.code);
+    for (const finding of pageFindings(v3({ title: "t".repeat(80), meta_description: "m".repeat(200) }, { titleLength: 80, metaDescriptionLength: 200 }))) emitted.add(finding.code);
+    for (const finding of pageFindings(v3({ requested_url: "http://example.co.uk/x", final_url: "https://example.co.uk/x", path: "/x", redirect_count: 1, discovered_via: "link" }))) emitted.add(finding.code);
+    const home = v3({ id: "h", page_role: "homepage", title: "Same", meta_description: "Same meta" }, { links: [{ url: "https://example.co.uk/elsewhere", text: "x", region: "nav", group: null }] });
+    const location = v3({ id: "l", requested_url: "https://example.co.uk/uxbridge", final_url: "https://example.co.uk/uxbridge", path: "/uxbridge", page_role: "location", title: "Same", meta_description: "Same meta" });
+    const service = v3({ id: "s", requested_url: "https://example.co.uk/roofing", final_url: "https://example.co.uk/roofing", path: "/roofing", page_role: "service" });
+    const evaluated: SiteSummary = { ...summary, homepageRenderingMode: "server_rendered", renderedContentEvaluated: true, evidenceVersion: 3 };
+    for (const finding of crossPageFindings([home, location, service], evaluated)) emitted.add(finding.code);
+    const nap = { phones: [], emails: [], postcodes: [], addressCandidates: [], businessNames: [], localities: [], pagesWithPhone: 0, pagesWithEmail: 0, pagesWithAddressCandidate: 0, pagesEvaluated: 1 };
+    const schema = { localBusinessPages: 1, organizationPages: 0, localBusinessTypes: ["RoofingContractor"], hasName: true, hasTelephone: false, hasAddress: false, addressLocality: null, areaServed: [], hasGeo: false, sameAs: [], hasAggregateRating: false, reviewCount: 0, localBusinessMissingFields: ["telephone", "address"] };
+    for (const finding of siteFindings({ ...evaluated, locationPages: [], nap, schema }, [v3({ schema_types: ["RoofingContractor"] })])) emitted.add(finding.code);
     expect([...emitted].sort()).toEqual([...ALL_FINDING_CODES].sort());
     for (const code of emitted) {
       expect(FINDING_TEXT[code].title.length).toBeGreaterThan(0);

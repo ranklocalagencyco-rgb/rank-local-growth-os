@@ -1,8 +1,9 @@
 import { z } from "zod";
 
-import { buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState, nextFrontierEntry, parseCrawlState, siteDomainOf, siteOrigin, summariseSite, type CrawlState } from "@/audit/crawler";
+import { buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState, nextFrontierEntry, parseCrawlState, recordLinkContext, siteDomainOf, siteOrigin, summariseSite, type CrawlState } from "@/audit/crawler";
 import { AUDIT_CRAWLER_VERSION } from "@/audit/extract";
-import { AUDIT_RULES_VERSION, pageFindings, siteFindings, type FindingInput } from "@/audit/findings";
+import { AUDIT_RULES_VERSION, crossPageFindings, pageFindings, pageRuleContext, siteFindings, type FindingInput } from "@/audit/findings";
+import { buildLinkGraph } from "@/audit/site-evidence";
 import type { SafeFetcher, SafeFetchReason, SafeFetchResult } from "@/audit/safe-fetch";
 import { normalizeAuditUrl } from "@/audit/url";
 import type { AuditFindingInsert, AuditProspect, AuditStore } from "@/audit/store";
@@ -118,7 +119,8 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
     // Finalise from stored rows so a retry recomputes exactly the same findings.
     const pages = await store.listPages(run.id);
     const summary = summariseSite(state, pages);
-    const findings: FindingInput[] = [...pages.flatMap((page) => pageFindings(page)), ...siteFindings(summary, pages)];
+    const graph = buildLinkGraph(pages);
+    const findings: FindingInput[] = [...pages.flatMap((page) => pageFindings(page, pageRuleContext(graph, page))), ...crossPageFindings(pages, summary), ...siteFindings(summary, pages)];
     const rows: AuditFindingInsert[] = findings.map((finding) => ({ workspaceId, auditRunId: run.id, prospectId: run.prospect_id, pageId: finding.pageId, scope: finding.scope, code: finding.code, severity: finding.severity, evidence: finding.evidence, ruleVersion: AUDIT_RULES_VERSION }));
     await store.insertFindings(rows);
     await store.updateRun(run.id, { status: "completed", completedAt: now().toISOString(), errorSummary: null, siteSummary: summary as unknown as Record<string, unknown>, crawlState: { ...state, frontier: [] } as unknown as Record<string, unknown>, pagesAttempted: counters.attempted, pagesSucceeded: counters.succeeded, pagesFailed: counters.failed });
@@ -162,6 +164,8 @@ async function startCrawl(run: WebsiteAuditRun, state: CrawlState, fetcher: Safe
     await deps.store.insertPage(outcome.page);
     counters.succeeded += 1;
   }
+  // Homepage link context must exist before any URL (sitemap or link) is enqueued so priorities and classification see it.
+  if (outcome.evidence) recordLinkContext(state, outcome.evidence);
 
   const sitemaps = await discoverSitemaps(fetcher, origin, state);
   Object.assign(state.summary, { robotsTxtReachable: sitemaps.robotsTxtReachable, robotsDisallowAll: sitemaps.robotsDisallowAll, sitemapReachable: sitemaps.sitemapReachable, sitemapUrlsDiscovered: sitemaps.sitemapUrlsDiscovered, sitemapUrlsSameSite: sitemaps.sitemapUrlsSameSite });

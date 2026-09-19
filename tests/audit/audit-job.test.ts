@@ -136,7 +136,8 @@ describe("website audit job", () => {
     expect(codes).toContain("page:missing_h1");
     expect(codes).not.toContain("site:no_localbusiness_schema");
     expect(codes).not.toContain("site:no_contact_page_detected");
-    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v2")).toBe(true);
+    expect(store.findings.every((finding) => finding.ruleVersion === "audit-rules/v3")).toBe(true);
+    expect(store.pages.every((page) => page.evidence_json.evidenceVersion === 3 && page.evidence_json.crawlerVersion === "audit-crawler/v3")).toBe(true);
     expect(store.activity).toEqual(["audit.completed"]);
     expect(store.events).toEqual([`audit.completed:${runId}`]);
   });
@@ -247,7 +248,8 @@ describe("website audit job", () => {
     expect(store.run.site_summary_json).toMatchObject({ pagesCrawled: 1, clientRenderedPages: 1, homepageRenderingMode: "client_rendered_likely", renderedContentEvaluated: false });
 
     const codes = store.findings.map((finding) => `${finding.scope}:${finding.code}`).sort();
-    expect(codes).toEqual(["page:missing_canonical", "site:client_rendered_site", "site:sitemap_missing"]);
+    // Head-level rules (canonical, title/meta length) stay evaluated on a shell; content rules (thin_page, h1, NAP, schema) do not.
+    expect(codes).toEqual(["page:meta_description_too_short", "page:missing_canonical", "page:title_too_short", "site:client_rendered_site", "site:sitemap_missing"]);
     const shellFinding = store.findings.find((finding) => finding.code === "client_rendered_site")!;
     expect(shellFinding.evidence).toMatchObject({ renderedContentEvaluated: false, homepageRenderingMode: "client_rendered_likely", notEvaluated: expect.arrayContaining(["missing_h1", "no_contact_page_detected", "no_service_pages_detected", "no_localbusiness_schema", "no_structured_data"]) });
     expect(store.activity).toEqual(["audit.completed"]);
@@ -263,6 +265,103 @@ describe("website audit job", () => {
     expect(codes).not.toContain("client_rendered_site");
     expect(codes).toContain("missing_h1"); // /blog/post-1 is sparse server HTML, still judged
     expect(store.findings.filter((finding) => finding.code === "missing_h1").map((finding) => (finding.evidence as { path: string }).path)).not.toContain("/book");
+  });
+
+  // WordPress-style site: every link and sitemap entry carries a trailing slash and the server 301s the slash-less form.
+  const wpHome = html("Home", `<nav><ul>
+    <li><a href="/services/">Services</a><ul><li><a href="/new-roofs/">New Roofs</a></li><li><a href="http://example.co.uk/old-guttering/">Guttering</a></li></ul></li>
+    <li><a href="/areas-we-cover/">Areas We Cover</a><ul><li><a href="/uxbridge/">Uxbridge</a></li><li><a href="/ruislip/">Ruislip</a></li></ul></li>
+    <li><a href="/contact-us/">Contact Us</a></li><li><a href="/">Home</a></li><li><a href="/index.html">Home again</a></li><li><a href="/privacy-policy/">Privacy</a></li></ul></nav>
+    <p>${"word ".repeat(200)}</p><footer><a href="tel:01895 123456">01895 123456</a><p>1 High Street, Uxbridge, UB8 1AA</p></footer>`,
+    '<script type="application/ld+json">{"@type":"RoofingContractor","name":"A&B Roofing","telephone":"01895 123456","address":{"@type":"PostalAddress","streetAddress":"1 High Street","addressLocality":"Uxbridge","postalCode":"UB8 1AA"}}</script>');
+  const wpSite: Record<string, Route> = {
+    "https://example.co.uk/": { body: wpHome },
+    "https://example.co.uk/robots.txt": { headers: { "content-type": "text/plain" }, body: "User-agent: *\nSitemap: https://example.co.uk/sitemap.xml\n" },
+    "https://example.co.uk/sitemap.xml": { headers: { "content-type": "application/xml" }, body: `<urlset>${["/", "/new-roofs/", "/areas-we-cover/", "/uxbridge/", "/ruislip/", "/hayes/", "/contact-us/", "/privacy-policy/"].map((path) => `<url><loc>https://example.co.uk${path}</loc></url>`).join("")}</urlset>` },
+    "https://example.co.uk/new-roofs": { status: 301, headers: { location: "/new-roofs/" } },
+    "https://example.co.uk/new-roofs/": { body: html("New Roofs in Uxbridge and Hillingdon", `<p>${"word ".repeat(200)}</p>`) },
+    "http://example.co.uk/old-guttering/": { status: 301, headers: { location: "https://example.co.uk/guttering/" } },
+    "https://example.co.uk/guttering/": { body: html("Guttering in Uxbridge", `<p>${"word ".repeat(200)}</p>`) },
+    "https://example.co.uk/areas-we-cover/": { body: html("Areas We Cover", `<p>${"word ".repeat(200)}</p>`) },
+    "https://example.co.uk/uxbridge/": { body: html("Roofers in Uxbridge", `<p>${"word ".repeat(200)}</p>`) },
+    "https://example.co.uk/ruislip/": { body: html("Welcome", `<p>${"word ".repeat(200)}</p>`) },
+    "https://example.co.uk/hayes/": { body: html("Roofers in Hayes", `<p>${"word ".repeat(200)}</p>`) },
+    "https://example.co.uk/contact-us/": { body: html("Contact Us", '<form><input type="email" name="email"></form>') },
+    "https://example.co.uk/privacy-policy/": { body: html("Privacy Policy", `<p>${"word ".repeat(200)}</p>`) },
+  };
+
+  it("fetches exactly the URLs the site links to: no artefact redirects, one row per page, homepage never refetched", async () => {
+    const store = new MemoryAuditStore();
+    const fetchImpl = site(wpSite);
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
+    expect(store.run.status).toBe("completed");
+    expect(fetchImpl.calls).toContain("https://example.co.uk/uxbridge/");
+    expect(fetchImpl.calls).not.toContain("https://example.co.uk/uxbridge");
+    expect(fetchImpl.calls).not.toContain("https://example.co.uk/new-roofs");
+    expect(fetchImpl.calls).not.toContain("https://example.co.uk/index.html");
+    expect(fetchImpl.calls.filter((url) => url === "https://example.co.uk/")).toHaveLength(1);
+    const paths = store.pages.map((page) => page.path);
+    expect(new Set(paths).size).toBe(paths.length);
+    expect(store.pages.filter((page) => page.path === "/")).toHaveLength(1);
+    const newRoofs = store.pages.find((page) => page.path === "/new-roofs")!;
+    expect(newRoofs).toMatchObject({ requested_url: "https://example.co.uk/new-roofs/", final_url: "https://example.co.uk/new-roofs/", redirect_count: 0, page_role: "service" });
+    expect(store.pages.every((page) => page.path === "/guttering" || page.redirect_count === 0)).toBe(true);
+    // The real redirect (http → https, different path) is kept as evidence and flagged; the guttering page is one row.
+    const guttering = store.pages.find((page) => page.path === "/guttering")!;
+    expect(guttering).toMatchObject({ requested_url: "http://example.co.uk/old-guttering/", final_url: "https://example.co.uk/guttering/", redirect_count: 1, page_role: "service" });
+    expect(guttering.evidence_json).toMatchObject({ meaningfulRedirect: true });
+    expect(store.findings.map((finding) => finding.code)).toContain("internal_link_redirect");
+    expect(store.run.site_summary_json).toMatchObject({ internalRedirects: [{ requestedUrl: "http://example.co.uk/old-guttering/", finalUrl: "https://example.co.uk/guttering/", linkedFrom: ["/"] }] });
+  });
+
+  it("classifies single-segment location pages from evidence and crawls navigation-listed locations before other pages", async () => {
+    const store = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(wpSite)));
+    const byPath = new Map(store.pages.map((page) => [page.path, page]));
+    expect(byPath.get("/uxbridge")).toMatchObject({ page_role: "location", evidence_json: expect.objectContaining({ roleSignals: ["h1_in_place:uxbridge"], locality: "Uxbridge" }) });
+    expect(byPath.get("/ruislip")).toMatchObject({ page_role: "location", evidence_json: expect.objectContaining({ roleSignals: ["nav_parent:areas-we-cover"], locality: "Ruislip" }) });
+    expect(byPath.get("/hayes")).toMatchObject({ page_role: "location", discovered_via: "sitemap" });
+    expect(byPath.get("/areas-we-cover")).toMatchObject({ page_role: "location" });
+    expect(byPath.get("/privacy-policy")).toMatchObject({ page_role: "other", evidence_json: expect.objectContaining({ roleSignals: [] }) });
+    expect(byPath.get("/new-roofs")?.evidence_json).toMatchObject({ service: "New Roofs", headingPattern: { source: "h1", subject: "New Roofs", preposition: "in", places: ["Uxbridge", "Hillingdon"] } });
+    const paths = store.pages.map((page) => page.path);
+    expect(paths.indexOf("/ruislip")).toBeLessThan(paths.indexOf("/contact-us"));
+    expect(paths.indexOf("/uxbridge")).toBeLessThan(paths.indexOf("/contact-us"));
+    expect(paths.indexOf("/privacy-policy")).toBe(paths.length - 1);
+    expect(store.run.crawl_state_json).toMatchObject({ linkContext: expect.objectContaining({ "example.co.uk/uxbridge": { anchors: ["Uxbridge"], navParent: "Areas We Cover" }, "example.co.uk/new-roofs": { anchors: ["New Roofs"], navParent: "Services" } }) });
+
+    const summary = store.run.site_summary_json as { locationPagesFound: number; locationPages: { path: string; locality: string | null; hub: boolean }[]; serviceLocationCombos: unknown[]; nap: { phones: { digits: string; sources: string[] }[]; addressCandidates: unknown[] }; schema: { localBusinessMissingFields: string[] } };
+    expect(summary.locationPagesFound).toBe(4);
+    expect(summary.locationPages).toEqual(expect.arrayContaining([{ path: "/uxbridge", locality: "Uxbridge", hub: false }, { path: "/areas-we-cover", locality: null, hub: true }]));
+    expect(summary.serviceLocationCombos).toEqual(expect.arrayContaining([{ path: "/new-roofs", service: "New Roofs", locality: "Uxbridge" }]));
+    expect(summary.nap.phones[0]).toMatchObject({ digits: "01895123456", sources: expect.arrayContaining(["tel_link", "text:footer", "schema"]) });
+    expect(summary.nap.addressCandidates).toHaveLength(1);
+    expect(summary.schema.localBusinessMissingFields).toEqual([]);
+
+    const codes = store.findings.map((finding) => `${finding.code}@${store.pages.find((page) => page.id === finding.pageId)?.path ?? "site"}`);
+    expect(codes).toContain("location_page_not_linked_from_homepage@/hayes");
+    expect(codes).not.toContain("location_page_not_linked_from_homepage@/uxbridge");
+    expect(codes).not.toContain("service_page_not_linked_from_homepage@/new-roofs");
+    for (const absent of ["nap_phone_missing", "nap_address_missing", "location_pages_missing", "localbusiness_schema_incomplete", "no_localbusiness_schema"]) expect(codes.join(" ")).not.toContain(absent);
+    expect(codes).toContain("title_too_short@/contact-us"); // "Contact Us" is 10 characters
+    expect(codes).not.toContain("thin_page@/contact-us"); // contact pages are exempt from thin_page
+  });
+
+  it("persists the homepage link context at the deadline so a resumed job classifies and dedupes exactly as an uninterrupted one", async () => {
+    const store = new MemoryAuditStore();
+    const fetchImpl = site(wpSite);
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(0), deps(store, fetchImpl))).toEqual({ status: "continue", delaySeconds: 1 });
+    expect(store.pages).toHaveLength(1);
+    expect(store.run.crawl_state_json).toMatchObject({ phase: "crawl", linkContext: expect.objectContaining({ "example.co.uk/ruislip": { anchors: ["Ruislip"], navParent: "Areas We Cover" } }) });
+    const callsAfterFirst = fetchImpl.calls.length;
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl))).toEqual({ status: "completed" });
+    const later = fetchImpl.calls.slice(callsAfterFirst);
+    expect(later).not.toContain("https://example.co.uk/");
+    expect(later).not.toContain("https://example.co.uk/uxbridge");
+    expect(later.filter((url) => url === "https://example.co.uk/uxbridge/")).toHaveLength(1);
+    expect(store.pages.find((page) => page.path === "/ruislip")).toMatchObject({ page_role: "location", evidence_json: expect.objectContaining({ roleSignals: ["nav_parent:areas-we-cover"] }) });
+    expect(new Set(store.pages.map((page) => page.path)).size).toBe(store.pages.length);
+    expect(store.run.pages_attempted).toBe(store.pages.length);
   });
 
   it("never refetches the homepage when the sitemap or a page links back to it", async () => {

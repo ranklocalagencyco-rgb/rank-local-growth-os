@@ -174,7 +174,8 @@ export type LocalRankObservation = {
 };
 
 export type WebsiteAuditStatus = "queued" | "running" | "completed" | "failed";
-export type AuditPageRole = "homepage" | "service" | "location" | "about" | "contact" | "testimonials" | "other";
+/** Deterministic page role. `gallery` and `blog` were added in migration 007 (audit-crawler/v3). */
+export type AuditPageRole = "homepage" | "service" | "location" | "about" | "contact" | "testimonials" | "gallery" | "blog" | "other";
 export type AuditDiscoveredVia = "homepage" | "sitemap" | "link";
 export type AuditFindingSeverity = "info" | "low" | "medium" | "high";
 

@@ -1,18 +1,22 @@
+import { createHash } from "node:crypto";
+
 import { load, type CheerioAPI } from "cheerio";
 
+import { extractNapEvidence, type NapEvidence } from "@/audit/nap";
+import { extractSchemaEvidence, type SchemaEvidence } from "@/audit/schema";
+import { LOCAL_BUSINESS_TYPE, TRACKED_SCHEMA_TYPES } from "@/audit/schema-types";
+import { MAX_H2_TEXT, MAX_SOCIAL_LINKS, MAX_STORED_LINKS_PER_PAGE } from "@/audit/thresholds";
 import { isCrawlablePath, isSameSite, normalizeAuditUrl } from "@/audit/url";
 import { normalizeDomain } from "@/domain/identifiers";
 
 // Deterministic HTML evidence extraction (RL-052/053/055/056/057). Input is HTML text; output is facts only.
 // No interpretation, no scoring, no LLM (ai/rules/no-llm-in-crawler.md).
 
-export const AUDIT_CRAWLER_VERSION = "audit-crawler/v2";
+export const AUDIT_CRAWLER_VERSION = "audit-crawler/v3";
+/** Stored on every page's evidence_json; rules that need v3 evidence check it so older rows are never judged by new rules. */
+export const EVIDENCE_VERSION = 3;
 
-/** Schema.org types the product cares about, matched case-insensitively against every @type / itemtype seen. */
-export const TRACKED_SCHEMA_TYPES = ["LocalBusiness", "Organization", "Service", "WebSite", "WebPage", "BreadcrumbList", "FAQPage", "Review", "AggregateRating"] as const;
-
-/** LocalBusiness and its common schema.org subtypes as seen on trade/local sites. */
-export const LOCAL_BUSINESS_TYPE = /^(?:LocalBusiness|HomeAndConstructionBusiness|RoofingContractor|Plumber|Electrician|GeneralContractor|HVACBusiness|HousePainter|Locksmith|MovingCompany|ProfessionalService|LegalService|Attorney|Dentist|Physician|MedicalBusiness|AutoRepair|AutoDealer|Restaurant|Store|FinancialService|RealEstateAgent|TravelAgency|SportsActivityLocation|HealthAndBeautyBusiness|BeautySalon|HairSalon|DaySpa|ChildCare|EmploymentAgency|AnimalShelter|LodgingBusiness|Hotel|FoodEstablishment|EntertainmentBusiness|GovernmentOffice|Library|ShoppingCenter|SelfStorage|TouristInformationCenter|RadioStation|TelevisionStation|InternetCafe|DryCleaningOrLaundry|Florist|GardenStore|HardwareStore|HomeGoodsStore|PetStore|Bakery|CafeOrCoffeeShop|BarOrPub|Winery|Brewery|Distillery|NightClub|Dentist|Optician|Pharmacy|VeterinaryCare|Cleaner|Contractor)$/i;
+export { LOCAL_BUSINESS_TYPE, TRACKED_SCHEMA_TYPES };
 
 const CTA_TEXT = /\b(?:get (?:a |your )?(?:free )?quote|free quote|request (?:a )?quote|quote now|call (?:us|now|today)|contact us|get in touch|book (?:now|online|an? appointment)|enquire(?: now)?|make an enquiry|request a callback|free estimate|get started|schedule|speak to|talk to us|email us|message us)\b/i;
 
@@ -43,12 +47,28 @@ const APP_BUNDLE_SRC = /(?:^|\/)(?:assets|static|_next|_nuxt|_app|build|dist|bun
 /** Mount points that client-side frameworks fill at runtime. Empty on the server response when the app is client-rendered. */
 const APP_ROOT_SELECTOR = "#root, #app, #__next, #__nuxt, #___gatsby, #svelte, [data-reactroot], [data-server-rendered]";
 
+const FOOTER_SELECTOR = "footer, [role='contentinfo'], #footer, .footer, .site-footer";
+const HEADER_SELECTOR = "header, [role='banner'], #header, .header, .site-header";
+const NAV_SELECTOR = "nav, [role='navigation']";
+
+/** Registrable domains treated as social / profile / review platforms for `socialProfileLinks`. */
+const SOCIAL_HOSTS = new Set(["facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com", "youtube.com", "tiktok.com", "checkatrade.com", "trustpilot.com", "yell.com", "pinterest.com", "nextdoor.co.uk", "g.page", "goo.gl", "trustatrader.com", "ratedpeople.com", "mybuilder.com"]);
+
+export type PageLinkRegion = "nav" | "header" | "footer" | "main";
+/** One same-site crawlable link as the page wrote it (trailing slash kept), with where it sits and its menu parent label. */
+export type PageLink = { url: string; text: string | null; region: PageLinkRegion; group: string | null };
+
 export type PageEvidence = {
   title: string | null;
   metaDescription: string | null;
+  titleLength: number;
+  metaDescriptionLength: number;
   h1Count: number;
   h1Text: string[];
+  /** H1 elements present in the HTML but with no visible text (e.g. an image without alt). */
+  h1EmptyCount: number;
   h2Count: number;
+  h2Text: string[];
   canonicalUrl: string | null;
   metaRobots: string | null;
   noindex: boolean;
@@ -61,6 +81,10 @@ export type PageEvidence = {
   internalLinkCount: number;
   externalLinkCount: number;
   externalHosts: string[];
+  /** Same-site crawlable links with anchor text, region and menu parent; capped at MAX_STORED_LINKS_PER_PAGE. */
+  links: PageLink[];
+  linksTruncated: boolean;
+  socialProfileLinks: { host: string; url: string }[];
   telLinkCount: number;
   mailtoLinkCount: number;
   formCount: number;
@@ -71,6 +95,11 @@ export type PageEvidence = {
   schemaTypes: string[];
   hasStructuredData: boolean;
   hasLocalBusinessSchema: boolean;
+  schema: SchemaEvidence;
+  breadcrumbNames: string[];
+  nap: NapEvidence;
+  /** sha1 of the lowercased H1/H2/H3 sequence; evidence only, no rule uses it yet. */
+  headingFingerprint: string | null;
   renderingMode: RenderingMode;
   renderingSignals: RenderingSignals;
 };
@@ -146,11 +175,47 @@ export function classifyRenderingMode(signals: RenderingSignals, isEmptyDocument
   return scriptSignal && contentSignal && structureSignal ? "client_rendered_likely" : "server_rendered";
 }
 
+type AnyElement = Parameters<CheerioAPI>[0];
+
+function linkRegion($: CheerioAPI, element: AnyElement): PageLinkRegion {
+  const node = $(element);
+  if (node.closest(FOOTER_SELECTOR).length) return "footer";
+  if (node.closest(NAV_SELECTOR).length) return "nav";
+  if (node.closest(HEADER_SELECTOR).length) return "header";
+  return "main";
+}
+
+/** Label of the parent menu item for a link inside a nested list (`<li><a>Areas We Cover</a><ul><li><a>Uxbridge</a>`). */
+function linkGroup($: CheerioAPI, element: AnyElement): string | null {
+  const item = $(element).closest("li");
+  if (!item.length) return null;
+  const parentItem = item.parent("ul, ol").parent("li");
+  if (!parentItem.length) return null;
+  const label = parentItem.children("a, span, button, p, div").first();
+  const text = clean(label.clone().children("ul, ol").remove().end().text());
+  return text ? text.slice(0, 60) : null;
+}
+
+function anchorText($: CheerioAPI, element: AnyElement): string | null {
+  const node = $(element);
+  const text = clean(node.text()) ?? clean(node.attr("aria-label")) ?? clean(node.attr("title")) ?? clean(node.find("img[alt]").first().attr("alt"));
+  return text ? text.slice(0, 80) : null;
+}
+
+/** `normalizeDomain` keeps subdomains (`m.facebook.com`, `uk.linkedin.com`), so match on the registrable suffix. */
+function isSocialHost(host: string, url: string): boolean {
+  for (const social of SOCIAL_HOSTS) if (host === social || host.endsWith(`.${social}`)) return true;
+  return (host === "google.com" || host.endsWith(".google.com")) && /\/maps\b|maps\.google|business\.google|\/local\b/i.test(url);
+}
+
 /** Extracts evidence from one HTML document. `finalUrl` resolves relative links; `siteDomain` classifies internal vs external. */
 export function extractPageEvidence(html: string, finalUrl: string, siteDomain: string): PageEvidence {
   const $ = load(html);
 
-  const h1 = $("h1").map((_, element) => clean($(element).text())).get().filter((text): text is string => Boolean(text));
+  const h1All = $("h1").map((_, element) => clean($(element).text())).get();
+  const h1 = h1All.filter((text): text is string => Boolean(text));
+  const h2 = $("h2").map((_, element) => clean($(element).text())).get().filter((text): text is string => Boolean(text));
+  const h3 = $("h3").map((_, element) => clean($(element).text())).get().filter((text): text is string => Boolean(text));
   const robots = clean($('meta[name="robots" i]').attr("content")) ?? clean($('meta[name="googlebot" i]').attr("content"));
   const robotsTokens = (robots ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean);
   const canonicalRaw = clean($('link[rel="canonical" i]').attr("href"));
@@ -164,7 +229,10 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
   }
 
   const internal = new Map<string, string>();
+  const links = new Map<string, PageLink>();
+  let linksTruncated = false;
   const externalHosts = new Set<string>();
+  const social = new Map<string, { host: string; url: string }>();
   let externalLinkCount = 0;
   let telLinkCount = 0;
   let mailtoLinkCount = 0;
@@ -178,12 +246,28 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     const normalized = normalizeAuditUrl(href, finalUrl);
     if (!normalized) return;
     if (isSameSite(normalized.url, siteDomain)) {
-      if (isCrawlablePath(normalized.path) && !internal.has(normalized.key)) internal.set(normalized.key, normalized.url);
-      else if (!isCrawlablePath(normalized.path) && !internal.has(normalized.key)) internal.set(normalized.key, ""); // counted, not crawled
+      const crawlable = isCrawlablePath(normalized.path);
+      if (crawlable && !internal.has(normalized.key)) internal.set(normalized.key, normalized.url);
+      else if (!crawlable && !internal.has(normalized.key)) internal.set(normalized.key, ""); // counted, not crawled
+      if (!crawlable) return;
+      const existing = links.get(normalized.key);
+      const text = anchorText($, element);
+      const group = linkGroup($, element);
+      if (existing) {
+        if (!existing.text && text) existing.text = text;
+        if (!existing.group && group) existing.group = group;
+      } else if (links.size < MAX_STORED_LINKS_PER_PAGE) {
+        links.set(normalized.key, { url: normalized.url, text, region: linkRegion($, element), group });
+      } else {
+        linksTruncated = true;
+      }
     } else {
       externalLinkCount += 1;
       const host = normalizeDomain(normalized.url);
-      if (host) externalHosts.add(host);
+      if (host) {
+        externalHosts.add(host);
+        if (isSocialHost(host, normalized.url) && !social.has(normalized.url) && social.size < MAX_SOCIAL_LINKS) social.set(normalized.url, { host, url: normalized.url });
+      }
     }
   });
 
@@ -201,6 +285,7 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
   });
 
   const schemaTypes = new Set<string>();
+  const jsonLdDocuments: unknown[] = [];
   let jsonLdCount = 0;
   let jsonLdParseErrors = 0;
   $('script[type="application/ld+json" i]').each((_, element) => {
@@ -208,7 +293,9 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     const raw = $(element).text().trim();
     if (!raw) { jsonLdParseErrors += 1; return; }
     try {
-      collectTypes(JSON.parse(raw), schemaTypes);
+      const parsed: unknown = JSON.parse(raw);
+      jsonLdDocuments.push(parsed);
+      collectTypes(parsed, schemaTypes);
     } catch {
       jsonLdParseErrors += 1;
     }
@@ -222,6 +309,7 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     if (value) for (const type of value.split(/\s+/)) schemaTypes.add(lastSegment(type));
   });
   const types = [...schemaTypes].filter(Boolean).sort();
+  const schema = extractSchemaEvidence(jsonLdDocuments, $);
 
   const h1Count = $("h1").length;
   const h2Count = $("h2").length;
@@ -235,12 +323,20 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     ...scriptSignals($),
   };
 
+  const title = clean($("head > title").first().text()) ?? clean($("title").first().text());
+  const metaDescription = clean($('meta[name="description" i]').attr("content"));
+  const headings = [...h1, ...h2, ...h3].map((text) => text.toLowerCase());
+
   return {
-    title: clean($("head > title").first().text()) ?? clean($("title").first().text()),
-    metaDescription: clean($('meta[name="description" i]').attr("content")),
+    title,
+    metaDescription,
+    titleLength: title?.length ?? 0,
+    metaDescriptionLength: metaDescription?.length ?? 0,
     h1Count,
     h1Text: h1.slice(0, 10).map((text) => text.slice(0, 200)),
+    h1EmptyCount: Math.max(0, h1Count - h1.length),
     h2Count,
+    h2Text: h2.slice(0, MAX_H2_TEXT).map((text) => text.slice(0, 120)),
     canonicalUrl,
     metaRobots: robots,
     noindex: robotsTokens.includes("noindex") || robotsTokens.includes("none"),
@@ -252,6 +348,9 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     internalLinkCount: internal.size,
     externalLinkCount,
     externalHosts: [...externalHosts].slice(0, 10),
+    links: [...links.values()],
+    linksTruncated,
+    socialProfileLinks: [...social.values()],
     telLinkCount,
     mailtoLinkCount,
     formCount,
@@ -262,6 +361,10 @@ export function extractPageEvidence(html: string, finalUrl: string, siteDomain: 
     schemaTypes: types,
     hasStructuredData: types.length > 0,
     hasLocalBusinessSchema: types.some((type) => LOCAL_BUSINESS_TYPE.test(type)),
+    schema,
+    breadcrumbNames: schema.breadcrumbNames,
+    nap: extractNapEvidence($),
+    headingFingerprint: headings.length ? createHash("sha1").update(headings.join("\n")).digest("hex") : null,
     renderingMode: classifyRenderingMode(renderingSignals, html.trim().length === 0),
     renderingSignals,
   };

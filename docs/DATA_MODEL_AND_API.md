@@ -244,7 +244,7 @@ unique (campaign_run_id, provider, provider_ref, search_category, search_locatio
 ```
 
 
-## website_audit_runs / website_audit_pages / website_audit_findings (implemented, migration 006)
+## website_audit_runs / website_audit_pages / website_audit_findings (implemented, migrations 006–007)
 
 The first audit slice implements the crawl/evidence layer with these three tables (the logical `crawl_runs` / `evidence_items` / `audits` split above remains the target for scoring and AI layers):
 
@@ -262,6 +262,12 @@ website_audit_pages     one row per fetched URL: requested_url, final_url, path,
                         unique (audit_run_id, requested_url); no HTML stored
 website_audit_findings  scope (site|page), page_id, code, severity (info|low|medium|high), evidence_json, rule_version
 ```
+
+`page_role` values: `homepage`, `service`, `location`, `about`, `contact`, `testimonials`, `gallery`, `blog`, `other` (migration 007 added `gallery` and `blog`).
+
+`evidence_json` (page) — v1/v2 keys: `redirectChain`, `externalHosts`, `ctaSamples`, `jsonLdParseErrors`, `hasLocalBusinessSchema`, `canonicalMatchesFinal`, `renderingMode`, `renderingSignals`. `audit-crawler/v3` adds optional keys: `evidenceVersion` (3), `crawlerVersion`, `meaningfulRedirect`, `roleSignals[]`, `locality`, `service`, `headingPattern`, `titleLength`, `metaDescriptionLength`, `h1EmptyCount`, `h2Text[]`, `breadcrumbNames[]`, `links[] {url, text, region, group}`, `linksTruncated`, `socialProfileLinks[]`, `nap {phones, emails, postcodes, addressCandidates, businessNames, hasContactForm}`, `schema {localBusiness, organization, aggregateRating, reviewCount, hasService, breadcrumbNames}`, `headingFingerprint`.
+
+`site_summary_json` (run) — v1/v2 keys unchanged; v3 adds optional `evidenceVersion`, `galleryPagesFound`, `blogPagesFound`, `locationPages[]`, `servicePages[]`, `serviceLocationCombos[]`, `nap`, `schema`, `duplicateTitleGroups[]`, `duplicateMetaGroups[]`, `duplicateTitleMetaPairs[]`, `homepageLinkCount`, `pagesWithoutInboundLinks[]`, `internalRedirects[]`, `linksTruncatedOnAnyPage`. Full shapes, thresholds and the finding catalogue: `docs/AUDIT_RULES.md`.
 
 Events: `audit.requested`, `audit.completed`, `audit.failed`. Job type: `audit.run` with idempotency key `audit.run:<runId>`.
 

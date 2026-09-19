@@ -125,18 +125,20 @@ Critical security ticket.
 ## RL-054 robots/sitemap parser
 - implemented in `src/audit/sitemap.ts`.
 ## RL-055 internal-link graph
-- implemented as per-page internal/external link counts and frontier discovery; full graph deferred.
+- implemented within crawl scope (audit-crawler/v3): per-page stored links with anchor text, region and menu parent (`evidence_json.links`), inbound-link graph at finalisation (`src/audit/site-evidence.ts`), homepage coverage of service/location pages, meaningful internal redirects, pages without inbound links; whole-site graph still out of scope.
 ## RL-056 structured-data parser
-- implemented (JSON-LD @graph/@type, microdata itemtype, RDFa typeof).
+- implemented (JSON-LD @graph/@type, microdata itemtype, RDFa typeof); v3 adds LocalBusiness/Organization detail (name, telephone, PostalAddress, areaServed, geo, sameAs, opening hours, price range), AggregateRating/Review counts, BreadcrumbList names and `@id` reference resolution (`src/audit/schema.ts`).
 ## RL-057 CTA/contact detector
-- implemented (tel/mailto/form/CTA counts, contact page role).
+- implemented (tel/mailto/form/CTA counts, contact page role); v3 adds NAP observations with provenance (`src/audit/nap.ts`): phones, emails, UK postcodes, address candidates, business-name signals, contact-form presence.
+## RL-057a multi-signal page classification
+- implemented (`src/audit/classify.ts`): path keywords, page schema type, H1/title "X in PLACE" pattern, breadcrumb parent, homepage navigation parent; roles `gallery` and `blog` added (migration 007).
 ## RL-058 PageSpeed adapter
 ## RL-059 optional CrUX adapter
 ## RL-060 rendered screenshot worker
 ## RL-061 evidence-item writer
 - implemented as `website_audit_pages` + `site_summary_json` (migration 006).
 ## RL-062 finding rules engine
-- implemented in `src/audit/findings.ts` (`audit-rules/v1`).
+- implemented in `src/audit/findings.ts` (`audit-rules/v3`): 31 codes with fixed severity, static text and stored evidence; thresholds in `src/audit/thresholds.ts`; catalogue and limitations in `docs/AUDIT_RULES.md`. Near-duplicate body-content detection is documented as not implemented.
 ## RL-063 audit summary UI
 - minimal panel on the prospect page (status, pages, findings).
 ## RL-064 evidence inspector

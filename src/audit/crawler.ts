@@ -1,7 +1,9 @@
 import type { SafeFetcher, SafeFetchResult } from "@/audit/safe-fetch";
-import { extractPageEvidence, type PageEvidence } from "@/audit/extract";
+import { classifyPage, roleFromSectionLabel, type InboundLinkContext } from "@/audit/classify";
+import { EVIDENCE_VERSION, AUDIT_CRAWLER_VERSION, extractPageEvidence, type PageEvidence } from "@/audit/extract";
 import { renderingModeOf, type SiteSummary } from "@/audit/findings";
 import { parseRobotsTxt, parseSitemapXml } from "@/audit/sitemap";
+import { buildLinkGraph, duplicateGroups, evidenceVersionOf, inboundFor, isHtmlSuccess, isMeaningfulRedirect, napSummary, rolePageFacts, schemaSummary, type PageRow } from "@/audit/site-evidence";
 import { classifyPageRole, crawlPriority, isCrawlablePath, isSameSite, normalizeAuditUrl } from "@/audit/url";
 import type { AuditDiscoveredVia, WebsiteAuditPage } from "@/db/types";
 import type { AuditPageInsert } from "@/audit/store";
@@ -13,6 +15,9 @@ import { normalizeDomain } from "@/domain/identifiers";
 export const MAX_FRONTIER = 200;
 export const MAX_AUX_REQUESTS = 6;
 export const MAX_SITEMAP_FILES = 3;
+/** Homepage link context kept in crawl state: bounded so the persisted JSON stays small. */
+export const MAX_LINK_CONTEXT = 200;
+const MAX_CONTEXT_ANCHORS = 3;
 const READ_TEXT_TYPES = /^(?:text\/plain|text\/xml|application\/xml|application\/rss\+xml|application\/atom\+xml|application\/x-gzip|application\/octet-stream)$/;
 
 export type FrontierEntry = { url: string; key: string; via: AuditDiscoveredVia; from: string | null; priority: number };
@@ -26,10 +31,23 @@ export type CrawlState = {
   duplicateRedirects: number;
   auxRequests: number;
   summary: Partial<SiteSummary>;
+  /** Page key → anchors and menu parent as seen on the homepage. Lets later pages be classified with inbound context. */
+  linkContext: Record<string, InboundLinkContext>;
 };
 
 export function initialCrawlState(): CrawlState {
-  return { phase: "start", siteDomain: null, frontier: [], visited: [], finalKeys: [], duplicateRedirects: 0, auxRequests: 0, summary: {} };
+  return { phase: "start", siteDomain: null, frontier: [], visited: [], finalKeys: [], duplicateRedirects: 0, auxRequests: 0, summary: {}, linkContext: {} };
+}
+
+function parseLinkContext(value: unknown): Record<string, InboundLinkContext> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, InboundLinkContext> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Partial<InboundLinkContext>;
+    out[key] = { anchors: Array.isArray(record.anchors) ? record.anchors.filter((anchor): anchor is string => typeof anchor === "string") : [], navParent: typeof record.navParent === "string" ? record.navParent : null };
+  }
+  return out;
 }
 
 export function parseCrawlState(value: unknown): CrawlState {
@@ -45,7 +63,24 @@ export function parseCrawlState(value: unknown): CrawlState {
     duplicateRedirects: typeof record.duplicateRedirects === "number" ? record.duplicateRedirects : 0,
     auxRequests: typeof record.auxRequests === "number" ? record.auxRequests : 0,
     summary: record.summary && typeof record.summary === "object" ? record.summary : {},
+    linkContext: parseLinkContext(record.linkContext),
   };
+}
+
+/** Records the homepage's links (anchor text, menu parent) so pages fetched later carry inbound context. */
+export function recordLinkContext(state: CrawlState, evidence: PageEvidence): void {
+  for (const link of evidence.links) {
+    const key = normalizeAuditUrl(link.url)?.key;
+    if (!key) continue;
+    const existing = state.linkContext[key];
+    if (existing) {
+      if (link.text && existing.anchors.length < MAX_CONTEXT_ANCHORS && !existing.anchors.includes(link.text)) existing.anchors.push(link.text.slice(0, 40));
+      if (!existing.navParent && link.group) existing.navParent = link.group;
+      continue;
+    }
+    if (Object.keys(state.linkContext).length >= MAX_LINK_CONTEXT) break;
+    state.linkContext[key] = { anchors: link.text ? [link.text.slice(0, 40)] : [], navParent: link.group };
+  }
 }
 
 /** Adds same-site, crawlable, unseen URLs to the frontier, keeping it bounded and sorted by priority. */
@@ -58,7 +93,8 @@ export function enqueueFrontier(state: CrawlState, candidates: { url: string; vi
     if (!normalized || known.has(normalized.key)) continue;
     if (!isSameSite(normalized.url, state.siteDomain) || !isCrawlablePath(normalized.path)) continue;
     known.add(normalized.key);
-    state.frontier.push({ url: normalized.url, key: normalized.key, via: candidate.via, from: candidate.from, priority: crawlPriority(normalized.path, candidate.via) });
+    const hint = roleFromSectionLabel(state.linkContext[normalized.key]?.navParent);
+    state.frontier.push({ url: normalized.url, key: normalized.key, via: candidate.via, from: candidate.from, priority: crawlPriority(normalized.path, candidate.via, hint) });
     added += 1;
   }
   state.frontier.sort((a, b) => a.priority - b.priority);
@@ -89,6 +125,11 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
   const path = finalNormalized?.path ?? requestedNormalized?.path ?? null;
   const html = result.ok && result.isHtml && result.body !== null && result.status !== null && result.status >= 200 && result.status < 300;
   const evidence = html && state.siteDomain ? extractPageEvidence(result.body as string, result.finalUrl as string, state.siteDomain) : null;
+  const inbound = (requestedNormalized && state.linkContext[requestedNormalized.key]) ?? (finalNormalized && state.linkContext[finalNormalized.key]) ?? null;
+  const classification = evidence
+    ? classifyPage({ path, via: entry.via, title: evidence.title, h1Text: evidence.h1Text, breadcrumbNames: evidence.breadcrumbNames, schemaTypes: evidence.schemaTypes, inbound })
+    : null;
+  const pageRole = entry.via === "homepage" ? "homepage" : classification?.role ?? classifyPageRole(path ?? "/");
 
   const page: AuditPageInsert = {
     workspace_id: input.workspaceId,
@@ -99,7 +140,7 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
     path,
     discovered_via: entry.via,
     discovered_from: entry.from,
-    page_role: entry.via === "homepage" ? "homepage" : classifyPageRole(path ?? "/"),
+    page_role: pageRole,
     fetch_ok: result.ok,
     fetch_error: result.reason,
     http_status: result.status,
@@ -129,6 +170,7 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
     schema_types: evidence?.schemaTypes ?? [],
     has_structured_data: evidence?.hasStructuredData ?? false,
     evidence_json: {
+      // v1/v2 keys, unchanged
       redirectChain: result.redirectChain,
       externalHosts: evidence?.externalHosts ?? [],
       ctaSamples: evidence?.ctaSamples ?? [],
@@ -137,6 +179,25 @@ export function buildPageOutcome(input: { workspaceId: string; runId: string; pr
       canonicalMatchesFinal: evidence?.canonicalUrl && result.finalUrl ? normalizeAuditUrl(evidence.canonicalUrl)?.key === finalNormalized?.key : null,
       renderingMode: evidence?.renderingMode ?? "unknown",
       renderingSignals: evidence?.renderingSignals ?? null,
+      // v3 additions (optional for readers; absent on older rows)
+      evidenceVersion: EVIDENCE_VERSION,
+      crawlerVersion: AUDIT_CRAWLER_VERSION,
+      meaningfulRedirect: result.finalUrl ? isMeaningfulRedirect(entry.url, result.finalUrl) : false,
+      roleSignals: classification?.signals ?? [],
+      locality: classification?.locality ?? null,
+      service: classification?.service ?? null,
+      headingPattern: classification?.headingPattern ?? null,
+      titleLength: evidence?.titleLength ?? null,
+      metaDescriptionLength: evidence?.metaDescriptionLength ?? null,
+      h1EmptyCount: evidence?.h1EmptyCount ?? 0,
+      h2Text: evidence?.h2Text ?? [],
+      breadcrumbNames: evidence?.breadcrumbNames ?? [],
+      links: evidence?.links ?? [],
+      linksTruncated: evidence?.linksTruncated ?? false,
+      socialProfileLinks: evidence?.socialProfileLinks ?? [],
+      nap: evidence?.nap ?? null,
+      schema: evidence?.schema ?? null,
+      headingFingerprint: evidence?.headingFingerprint ?? null,
     },
     fetched_at: input.fetchedAt,
   };
@@ -189,16 +250,18 @@ export async function discoverSitemaps(fetcher: SafeFetcher, origin: string, sta
   return discovery;
 }
 
-/** Site-level facts from the persisted pages plus crawl state. */
-export function summariseSite(state: CrawlState, pages: Pick<WebsiteAuditPage, "fetch_ok" | "http_status" | "content_type" | "page_role" | "schema_types" | "discovered_from" | "evidence_json">[]): SiteSummary {
-  const html = pages.filter((page) => page.fetch_ok && page.http_status !== null && page.http_status >= 200 && page.http_status < 300 && /^(?:text\/html|application\/xhtml\+xml)/i.test(page.content_type ?? ""));
+/** Site-level facts from the persisted pages plus crawl state. Re-derivable from stored rows on every finalisation. */
+export function summariseSite(state: CrawlState, pages: (PageRow & Pick<WebsiteAuditPage, "schema_types">)[]): SiteSummary {
+  const html = pages.filter(isHtmlSuccess);
   const partial = state.summary;
   const homepageFinalUrl = partial.homepageFinalUrl ?? null;
   const schemaTypes = new Set<string>();
   for (const page of html) for (const type of page.schema_types) schemaTypes.add(type);
   const homepage = html.find((page) => page.page_role === "homepage") ?? null;
   const homepageRenderingMode = homepage ? renderingModeOf(homepage) : "unknown";
-  return {
+  const v3 = html.some((page) => evidenceVersionOf(page) >= 3);
+
+  const base: SiteSummary = {
     homepageUrl: partial.homepageUrl ?? "",
     homepageFinalUrl,
     homepageHttps: homepageFinalUrl ? homepageFinalUrl.startsWith("https://") : false,
@@ -222,6 +285,34 @@ export function summariseSite(state: CrawlState, pages: Pick<WebsiteAuditPage, "
     clientRenderedPages: html.filter((page) => renderingModeOf(page) === "client_rendered_likely").length,
     homepageRenderingMode,
     renderedContentEvaluated: homepageRenderingMode !== "client_rendered_likely",
+  };
+  if (!v3) return base;
+
+  const graph = buildLinkGraph(pages);
+  const duplicates = duplicateGroups(pages);
+  const facts = rolePageFacts(pages);
+  const internalRedirects = pages
+    .filter((page) => page.fetch_ok && page.redirect_count > 0 && page.final_url && isMeaningfulRedirect(page.requested_url, page.final_url))
+    .map((page) => ({ requestedUrl: page.requested_url, finalUrl: page.final_url as string, linkedFrom: inboundFor(graph, page).map((entry) => entry.path ?? "").filter(Boolean) }));
+  const pagesWithoutInboundLinks = graph.truncated ? [] : html.filter((page) => page.page_role !== "homepage" && inboundFor(graph, page).length === 0).map((page) => page.path ?? page.requested_url);
+
+  return {
+    ...base,
+    evidenceVersion: EVIDENCE_VERSION,
+    galleryPagesFound: html.filter((page) => page.page_role === "gallery").length,
+    blogPagesFound: html.filter((page) => page.page_role === "blog").length,
+    locationPages: facts.locationPages,
+    servicePages: facts.servicePages,
+    serviceLocationCombos: facts.serviceLocationCombos,
+    nap: napSummary(pages),
+    schema: schemaSummary(pages),
+    duplicateTitleGroups: duplicates.titles.map((group) => ({ title: group.value, paths: group.paths })),
+    duplicateMetaGroups: duplicates.metas.map((group) => ({ metaDescription: group.value, paths: group.paths })),
+    duplicateTitleMetaPairs: duplicates.pairs.map((group) => ({ value: group.value, paths: group.paths })),
+    homepageLinkCount: graph.homepageLinkCount,
+    pagesWithoutInboundLinks,
+    internalRedirects,
+    linksTruncatedOnAnyPage: graph.truncated,
   };
 }
 
