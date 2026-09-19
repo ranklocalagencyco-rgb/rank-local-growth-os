@@ -9,7 +9,7 @@ The constitution lives in `AGENTS.md` (non-negotiable rules, source-of-truth doc
 | Path | Contents |
 |---|---|
 | `skills/<name>/SKILL.md` | One reusable procedure each: purpose, when to use, non-negotiables, steps, verification, references, anti-patterns |
-| `rules/` | Standing contracts that are always true (job queue contract, no LLM in crawler paths) |
+| `rules/` | Standing contracts that are always true (working-tree ownership, job queue contract, no LLM in crawler paths) |
 | `checklists/` | Short review lists to run before declaring work done |
 | `examples/` | Verified snippets and templates referenced by skills |
 | `scripts/` | Runnable helpers used by the skills (quality gate, migration validation, LLM-import scan) |
@@ -24,7 +24,17 @@ The constitution lives in `AGENTS.md` (non-negotiable rules, source-of-truth doc
 | `quality-gate` | Finishing a change, before reporting completion |
 | `provider-adapter` | Adding or changing a discovery/enrichment/data provider integration |
 
-Rules: `rules/jobs-contract.md` applies to every background job; `rules/no-llm-in-crawler.md` is enforced by `node scripts/check-llm-imports.mjs --scan`, which every agent runs through the quality gate. Claude Code additionally calls the same script from an optional PreToolUse hook; that hook is a convenience, never the authority.
+## Rules
+
+| Rule | Applies to |
+|---|---|
+| `rules/working-tree-ownership.md` | Every coding agent, on every slice, whatever the model or vendor: one active implementation owner at a time, reviewers read-only, Git authoritative, explicit transfer and crash recovery |
+| `rules/jobs-contract.md` | Every background job handler |
+| `rules/no-llm-in-crawler.md` | Code under `src/discovery/website/`, `src/audit/`, `src/crawler/` |
+
+`rules/working-tree-ownership.md` is the first thing an agent loads before implementing: it is how Claude Code, Codex, ChatGPT coding agents, Gemini, Cursor, Windsurf and future tools share one working tree without depending on any vendor's session state. It uses only plain Git commands, so no adapter is needed beyond the pointer in `AGENTS.md`.
+
+`rules/jobs-contract.md` applies to every background job; `rules/no-llm-in-crawler.md` is enforced by `node scripts/check-llm-imports.mjs --scan`, which every agent runs through the quality gate. Claude Code additionally calls the same script from an optional PreToolUse hook; that hook is a convenience, never the authority.
 
 ## Skill file format
 

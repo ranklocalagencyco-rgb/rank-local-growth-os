@@ -16,7 +16,7 @@ This file only wires Claude Code to the repository's canonical guidance. The con
 | A provider or external API adapter | `ai/skills/provider-adapter/SKILL.md` |
 | Finishing a change | `ai/skills/quality-gate/SKILL.md` |
 
-3. Rules always in force: `ai/rules/jobs-contract.md` (every background job) and `ai/rules/no-llm-in-crawler.md` (no LLM imports under `src/discovery/website/`, `src/audit/`, `src/crawler/`).
+3. Rules always in force: `ai/rules/working-tree-ownership.md` (load before implementing; one active implementation owner per slice, reviewers read-only), `ai/rules/jobs-contract.md` (every background job) and `ai/rules/no-llm-in-crawler.md` (no LLM imports under `src/discovery/website/`, `src/audit/`, `src/crawler/`).
 4. Before reporting completion run `bash ai/scripts/quality-gate.sh` (add `--with-migrations` when migrations changed) and report each step's result. Never claim completion if a check fails.
 5. `.env.local` may be edited when necessary; never print, log, commit or expose its values. Report variable names only.
 
