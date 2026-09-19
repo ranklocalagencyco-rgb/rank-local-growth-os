@@ -264,6 +264,72 @@ export type WebsiteAuditFinding = {
 	created_at: string;
 };
 
+export type PerformanceStrategy = "mobile" | "desktop";
+export type PerformanceObservationStatus = "pending" | "succeeded" | "failed";
+
+/** One normalized performance-provider result for one URL and strategy. Also the cursor of the audit.performance job. Never stores Lighthouse JSON. */
+export type WebsitePerformanceObservation = {
+	id: string;
+	workspace_id: string;
+	prospect_id: string;
+	audit_run_id: string;
+	provider: string;
+	provider_version: string | null;
+	strategy: PerformanceStrategy;
+	page_role: string;
+	requested_url: string;
+	final_url: string | null;
+	status: PerformanceObservationStatus;
+	attempts: number;
+	error_code: string | null;
+	error_summary: string | null;
+	performance_score: number | null;
+	accessibility_score: number | null;
+	best_practices_score: number | null;
+	seo_score: number | null;
+	fcp_ms: number | null;
+	lcp_ms: number | null;
+	cls: number | null;
+	tbt_ms: number | null;
+	speed_index_ms: number | null;
+	tti_ms: number | null;
+	field_data_available: boolean;
+	field_scope: "url" | "origin" | null;
+	field_lcp_ms: number | null;
+	field_inp_ms: number | null;
+	field_cls: number | null;
+	field_overall_category: string | null;
+	run_warnings: string[];
+	observed_at: string | null;
+	retention_class: string;
+	created_at: string;
+	updated_at: string;
+};
+
+export type AuditScoreStatus = "complete" | "provisional" | "insufficient_evidence";
+
+/** Immutable deterministic score for one audit run under one scoring version. Reproducible from `breakdown_json`. */
+export type WebsiteAuditScore = {
+	id: string;
+	workspace_id: string;
+	prospect_id: string;
+	audit_run_id: string;
+	scoring_version: string;
+	score_status: AuditScoreStatus;
+	overall_score: number | null;
+	technical_score: number | null;
+	local_seo_score: number | null;
+	content_structure_score: number | null;
+	performance_score: number | null;
+	crawl_score: number | null;
+	evaluated_weight: number;
+	evidence_coverage: number;
+	breakdown_json: Record<string, unknown>;
+	calculated_at: string;
+	retention_class: string;
+	created_at: string;
+};
+
 export type JobRow = {
 	id: string;
 	workspace_id: string;
@@ -344,6 +410,8 @@ export type Database = {
 			website_audit_runs: TableDefinition<WebsiteAuditRun>;
 			website_audit_pages: TableDefinition<WebsiteAuditPage>;
 			website_audit_findings: TableDefinition<WebsiteAuditFinding>;
+			website_performance_observations: TableDefinition<WebsitePerformanceObservation>;
+			website_audit_scores: TableDefinition<WebsiteAuditScore>;
 			jobs: TableDefinition<JobRow>;
 			domain_events: TableDefinition<DomainEventRow>;
 			activity_events: TableDefinition<ActivityEvent>;

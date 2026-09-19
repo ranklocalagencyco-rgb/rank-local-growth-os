@@ -1,5 +1,8 @@
 import { AUDIT_CRAWLER_VERSION } from "@/audit/extract";
 import { AUDIT_RULES_VERSION } from "@/audit/findings";
+import { enqueueAuditFollowUp } from "@/audit/follow-up";
+import { AUDIT_SCORE_VERSION } from "@/audit/score/rules";
+import { getRuntimeConfig } from "@/config/env";
 import { auditJobIdempotencyKey, isAuditEligible, WEBSITE_AUDIT_JOB } from "@/audit/jobs";
 import { deterministicUuid } from "@/domain/deterministic-id";
 import { normalizeDomain } from "@/domain/identifiers";
@@ -54,4 +57,24 @@ export async function requestWebsiteAudit(client: DbClient, request: AuditRunReq
     { onConflict: "workspace_id,idempotency_key", ignoreDuplicates: true },
   );
   return { runId: run.data.id, jobId: job.id };
+}
+
+/**
+ * Queues performance evidence and the deterministic score for the prospect's latest completed audit. New audits get this
+ * automatically; this entry point exists for audits completed before the follow-up jobs existed. Idempotent by job key.
+ */
+export async function requestPerformanceAndScore(client: DbClient, request: Pick<AuditRunRequest, "workspaceId" | "prospectId">): Promise<{ runId: string }> {
+  const run = await client.from("website_audit_runs").select("id,prospect_id").eq("workspace_id", request.workspaceId).eq("prospect_id", request.prospectId).eq("status", "completed").order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (run.error) throw new Error(`Unable to load audit run: ${run.error.message}`);
+  if (!run.data) throw new AuditRequestError("There is no completed website audit to measure and score yet.");
+
+  const score = await client.from("website_audit_scores").select("id").eq("audit_run_id", run.data.id).eq("scoring_version", AUDIT_SCORE_VERSION).maybeSingle();
+  if (score.error) throw new Error(`Unable to load audit score: ${score.error.message}`);
+  if (score.data) throw new AuditRequestError(`This audit already has an ${AUDIT_SCORE_VERSION} score. Scores are immutable; run a new audit to measure again.`);
+
+  await enqueueAuditFollowUp(
+    { enqueue: async (input) => void (await enqueueJob(client, input)) },
+    { workspaceId: request.workspaceId, auditRunId: run.data.id, prospectId: run.data.prospect_id, traceId: createTraceId(), performanceEnabled: getRuntimeConfig().performanceProvider !== "none", scoringVersion: AUDIT_SCORE_VERSION },
+  );
+  return { runId: run.data.id };
 }

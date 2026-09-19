@@ -12,7 +12,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const PROTECTED_PATHS = ["src/discovery/website/", "src/audit/", "src/crawler/"];
+export const PROTECTED_PATHS = ["src/discovery/website/", "src/audit/", "src/crawler/", "src/performance/"];
 
 export const FORBIDDEN_SPECIFIERS = [
   { label: "@anthropic-ai/*", test: (s) => s.startsWith("@anthropic-ai/") },

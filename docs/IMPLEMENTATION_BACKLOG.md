@@ -133,6 +133,7 @@ Critical security ticket.
 ## RL-057a multi-signal page classification
 - implemented (`src/audit/classify.ts`): path keywords, page schema type, H1/title "X in PLACE" pattern, breadcrumb parent, homepage navigation parent; roles `gallery` and `blog` added (migration 007).
 ## RL-058 PageSpeed adapter
+- implemented: provider-neutral `PerformanceProvider` (`src/performance/provider.ts`), PageSpeed Insights v5 adapter with an optional key, `audit.performance` job (homepage only, mobile + desktop, one request per invocation, bounded retries), `website_performance_observations` (migration 008). Field data is stored when returned; a dedicated CrUX adapter remains RL-059.
 ## RL-059 optional CrUX adapter
 ## RL-060 rendered screenshot worker
 ## RL-061 evidence-item writer
@@ -143,6 +144,12 @@ Critical security ticket.
 - minimal panel on the prospect page (status, pages, findings).
 ## RL-064 evidence inspector
 ## RL-065 audit retry/failure UI
+## RL-066 recover audits stranded by a dead-lettered `audit.performance` job (future reliability ticket, not started)
+- known gap (`docs/AUDIT_SCORE.md` §7): if `audit.performance` dead-letters on an infrastructure error rather than a provider error, its observation rows stay `pending`, `audit.score` is never enqueued and the audit has no score until an operator re-queues the job.
+- wanted: a deterministic, idempotent recovery path, e.g. on dead-letter mark the run's still-`pending` observations `failed` with a safe `error_code` and enqueue `audit.score` (which then reports `provisional` with Performance withheld), plus an operator-visible signal. Must follow `ai/rules/jobs-contract.md`; terminal rows are still never rewritten.
+## RL-067 Detect bot/challenge/interstitial pages during audit crawl (future reliability ticket, not started)
+- known gap, seen live on 2026-09-19: a host's anti-bot layer answered the crawler with an HTTP 200 interstitial ("One moment, please...", 8 words, no links, sitemap unreachable). The crawler stored it as the homepage, the run completed with 1 page, and `audit-score/v1` correctly scored that evidence as `complete`, which misrepresents the site. PageSpeed, fetched by Google, measured the real page in the same run.
+- wanted: deterministic detection in the crawler (no LLM): known challenge titles/markers and vendor headers, a near-empty body with no links, a sitemap that stops answering, contradiction with an earlier run's page count. A detected challenge marks the run blocked/not evaluated with a safe reason instead of completing, produces no findings from the interstitial, and leaves the score `insufficient_evidence` or unwritten. No challenge solving or evasion; respect the host's decision and report it.
 
 **Milestone A:** `Find + Audit`.
 
@@ -158,8 +165,11 @@ Acceptance:
 # EPIC 4 — Scoring & Research
 
 ## RL-070 Score v1 rules
+- implemented: `audit-score/v1` (`src/audit/score/`), a website-quality score from stored evidence with pass / partial / fail / not-evaluated rules, denominator normalization and evidence-sufficiency states; documented in `docs/AUDIT_SCORE.md`. This is the audit score, not the Opportunity Score of spec §12.
 ## RL-071 Score versioning
+- implemented for the audit score: `scoring_version` on immutable `website_audit_scores` rows, unique per (audit run, version).
 ## RL-072 Score explanation UI
+- minimal internal panel on the prospect page (overall, status, categories, mobile/desktop performance, field-data availability, coverage, version). The per-rule explanation view and any client-facing report are not built.
 ## RL-073 Offer catalogue
 ## RL-074 Rank Local Brain schema
 ## RL-075 Brain editor

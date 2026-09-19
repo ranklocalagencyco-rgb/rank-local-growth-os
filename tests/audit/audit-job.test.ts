@@ -46,6 +46,7 @@ class MemoryAuditStore implements AuditStore {
   activity: string[] = [];
   events: string[] = [];
   updates: AuditRunPatch[] = [];
+  jobs: { type: string; idempotencyKey: string; payload: Record<string, unknown> }[] = [];
 
   constructor(prospect: Partial<AuditProspect> = {}, run: Partial<WebsiteAuditRun> = {}) {
     this.prospect = { id: prospectId, workspace_id: workspaceId, display_name: "A&B Roofing", website_state: "verified_website", website_url: "https://example.co.uk", canonical_domain: "example.co.uk", ...prospect };
@@ -77,6 +78,7 @@ class MemoryAuditStore implements AuditStore {
   async insertFindings(rows: AuditFindingInsert[]) {
     for (const row of rows) if (!this.findings.some((f) => f.auditRunId === row.auditRunId && f.pageId === row.pageId && f.code === row.code)) this.findings.push(row);
   }
+  async enqueue(input: { type: string; idempotencyKey: string; payload: Record<string, unknown> }) { if (!this.jobs.some((job) => job.idempotencyKey === input.idempotencyKey)) this.jobs.push({ type: input.type, idempotencyKey: input.idempotencyKey, payload: input.payload }); }
   async recordActivity(input: { eventType: string }) { this.activity.push(input.eventType); }
   async recordDomainEvent(input: { idempotencyKey: string }) { if (!this.events.includes(input.idempotencyKey)) this.events.push(input.idempotencyKey); }
 }
@@ -87,7 +89,7 @@ const context = (deadlineOffsetMs = 60_000, attempts = 1) => ({
   deadline: Date.now() + deadlineOffsetMs,
   logger: { debug() {}, info() {}, warn() {}, error() {} },
 });
-const deps = (store: AuditStore, fetchImpl: FetchLike, maxPages = 15) => ({ store, createFetcher: () => new SafeFetcher({ fetchImpl, lookup: publicLookup, timeoutMs: 500 }), config: { auditMaxPages: maxPages }, now: () => new Date(at) });
+const deps = (store: AuditStore, fetchImpl: FetchLike, maxPages = 15, performanceProvider: "pagespeed" | "none" = "pagespeed") => ({ store, createFetcher: () => new SafeFetcher({ fetchImpl, lookup: publicLookup, timeoutMs: 500 }), config: { auditMaxPages: maxPages, performanceProvider }, now: () => new Date(at) });
 
 describe("website audit job", () => {
   it("derives the idempotency key from the run and checks eligibility", () => {
@@ -190,6 +192,39 @@ describe("website audit job", () => {
     await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, fetchImpl));
     expect(store.findings.length).toBe(findings);
     expect(store.run.status).toBe("completed");
+  });
+
+  it("enqueues performance once the crawl completes, re-asserts it on a replay, and never for a failed audit", async () => {
+    const store = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(roofingSite)));
+    expect(store.jobs).toEqual([{ type: "audit.performance", idempotencyKey: `audit.performance:${runId}`, payload: { auditRunId: runId, prospectId } }]);
+
+    // Crash between the status flip and the enqueue: the replay of a completed run asserts the follow-up again.
+    store.jobs = [];
+    expect(await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(roofingSite)))).toEqual({ status: "completed" });
+    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.performance:${runId}`]);
+
+    const failed = new MemoryAuditStore();
+    await expect(runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(failed, site({ "https://example.co.uk/": { status: 500, body: "x" } })))).rejects.toThrow();
+    expect(failed.run.status).toBe("failed");
+    expect(failed.jobs).toEqual([]);
+  });
+
+  it("goes straight to the score when no performance provider is enabled", async () => {
+    const store = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(store, site(roofingSite), 15, "none"));
+    expect(store.jobs.map((job) => job.idempotencyKey)).toEqual([`audit.score:${runId}:audit-score/v1`]);
+  });
+
+  it("records how the crawl ended so the score can tell a capped crawl from an exhausted one", async () => {
+    const exhausted = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(exhausted, site(roofingSite)));
+    expect(exhausted.run.site_summary_json.crawlScope).toEqual({ pageCap: 15, frontierRemaining: 0 });
+
+    const capped = new MemoryAuditStore();
+    await runWebsiteAudit({ auditRunId: runId, prospectId }, context(), deps(capped, site(roofingSite), 2));
+    expect(capped.run.site_summary_json.crawlScope).toMatchObject({ pageCap: 2 });
+    expect((capped.run.site_summary_json.crawlScope as { frontierRemaining: number }).frontierRemaining).toBeGreaterThan(0);
   });
 
   it("fails the run non-retryably when the homepage is blocked, not HTML, or an error status", async () => {

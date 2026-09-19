@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
-import { AuditRequestError, requestWebsiteAudit } from "@/audit/run";
+import { AuditRequestError, requestPerformanceAndScore, requestWebsiteAudit } from "@/audit/run";
 import { getSupabaseAdminClient } from "@/db/client";
 import { getWorkspaceContext } from "@/domain/workspaces";
 
@@ -33,4 +33,20 @@ export async function runWebsiteAuditAction(formData: FormData): Promise<void> {
     back(prospectId, { error: "Unable to queue the website audit. Check the server logs and that migration 006 has been applied." });
   }
   back(prospectId, { notice: "Website audit queued." });
+}
+
+/** Queues performance evidence and the deterministic score for the latest completed audit. Runs in the background job worker. */
+export async function runPerformanceAndScoreAction(formData: FormData): Promise<void> {
+  const prospectId = prospectIdFrom(formData);
+  const client = getSupabaseAdminClient();
+  if (!client) back(prospectId, { error: "Supabase service role configuration is required to score audits." });
+
+  const context = getWorkspaceContext();
+  try {
+    await requestPerformanceAndScore(client, { workspaceId: context.workspaceId, prospectId });
+  } catch (error) {
+    if (error instanceof AuditRequestError) back(prospectId, { error: error.message });
+    back(prospectId, { error: "Unable to queue performance and scoring. Check the server logs and that migration 008 has been applied." });
+  }
+  back(prospectId, { notice: "Performance measurement and scoring queued." });
 }

@@ -28,7 +28,7 @@ At the start of every ticket. Re-read the Non-negotiables before proposing a pla
 10. `SEND_MODE` stays `disabled` by default; no autonomous live email sending in V1.
 11. Background jobs are idempotent and retry-safe (`ai/rules/jobs-contract.md`).
 12. Preserve source provenance and retention metadata on every stored fact; names alone never merge prospects.
-13. Not in V1 scope unless a ticket says so: outreach, Gmail, Hermes, AI interpretation, PageSpeed, Opportunity Score.
+13. Not in V1 scope unless a ticket says so: outreach, Gmail, Hermes, AI interpretation, Opportunity Score. In scope since RL-058/RL-070: PageSpeed performance evidence behind `src/performance/provider.ts` and the deterministic audit score (`docs/AUDIT_SCORE.md`), which is not the Opportunity Score.
 
 ## Layer map
 | Layer | Path | Rule |
@@ -58,4 +58,4 @@ Run `ai/checklists/architecture-review.md` against the diff, then `bash ai/scrip
 `AGENTS.md`; `docs/MASTER_BUILD_SPEC.md` §2 (deterministic before generative), §9 (discovery), §11 (crawl safety), §25 (SSRF); `docs/DATA_MODEL_AND_API.md` §5 (discovery candidates), retention classes; `docs/IMPLEMENTATION_BACKLOG.md`; `README.md` (discovery providers, migrations).
 
 ## Anti-patterns
-Adding a `hybrid` provider mode without tests; storing raw provider payloads; reading `process.env` outside `src/config`; putting business logic in React components; calling a provider from a request handler; inventing rankings, penalties or scores.
+Adding a `hybrid` provider mode without tests; storing raw provider payloads; reading `process.env` outside `src/config`; putting business logic in React components; calling a provider from a request handler; inventing rankings, penalties or scores (the only score is the documented, versioned `audit-score/vN`, computed from stored evidence).

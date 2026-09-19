@@ -46,6 +46,8 @@ NAP scope: UK phone formats (`+44`, national `0…`, 10–11 digits), UK postcod
 
 v1/v2 keys unchanged. v3 adds `evidenceVersion`, `galleryPagesFound`, `blogPagesFound`, `locationPages[] {path, locality, hub}`, `servicePages[] {path, service}`, `serviceLocationCombos[]`, `nap` (values aggregated across pages with page counts and sources), `schema` (LocalBusiness/Organization presence, `hasName`, `hasTelephone`, `hasAddress`, `areaServed`, `hasGeo`, `sameAs`, `hasAggregateRating`, `reviewCount`, `localBusinessMissingFields`), `duplicateTitleGroups`, `duplicateMetaGroups`, `duplicateTitleMetaPairs`, `homepageLinkCount`, `pagesWithoutInboundLinks` (crawl scope only), `internalRedirects[] {requestedUrl, finalUrl, linkedFrom}`, `linksTruncatedOnAnyPage`.
 
+Since the audit score was added, finalisation also stores `crawlScope {pageCap, frontierRemaining}`: the page cap in force and how many discovered URLs were still queued when the crawl stopped. It is evidence only (no finding reads it); the score uses it to tell "no such page" from "stopped at the page cap" ([`AUDIT_SCORE.md`](AUDIT_SCORE.md) §5). Runs finalised earlier do not have it.
+
 ## 4. Thresholds (`src/audit/thresholds.ts`)
 
 | Constant | Value |

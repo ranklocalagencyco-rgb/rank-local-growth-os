@@ -73,6 +73,8 @@ export type SiteSummary = {
   pagesWithoutInboundLinks?: string[];
   internalRedirects?: { requestedUrl: string; finalUrl: string; linkedFrom: string[] }[];
   linksTruncatedOnAnyPage?: boolean;
+  /** How the crawl ended: the page cap in force and the URLs still queued when it stopped. `frontierRemaining > 0` means absence of a page type is not proven. Absent on runs finalised before audit-score/v1. */
+  crawlScope?: { pageCap: number; frontierRemaining: number };
 };
 
 /** Static, rule-owned title and summary for every finding code. UI labels, not AI commentary. */

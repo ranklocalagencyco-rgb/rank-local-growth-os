@@ -19,6 +19,7 @@ Applies to every handler registered in `src/jobs/app-registry.ts`. The queue is 
 ## Deadline and progress
 
 - `context.deadline` is an epoch-ms budget (25 s per job, 45 s per batch by default). Check `Date.now() > context.deadline - 3_000` inside loops and return `continue` before doing more work.
+- A handler that wraps one slow external call it cannot yield inside (e.g. `audit.performance`) registers with `{ budgetMs }`. The processor gives it that budget and hands the job back untouched when the batch has less than that left. Such a handler makes one call per invocation, sizes the call's timeout from `context.deadline`, and counts its retries on its own rows because `continue` and hand-backs reset `job.attempts`.
 - Persist a cursor after every unit of work (`campaign_runs.cursor_json` is the template: unit index, page token, pending provider task). A retry must resume from the cursor, never restart.
 
 ## Idempotency of writes

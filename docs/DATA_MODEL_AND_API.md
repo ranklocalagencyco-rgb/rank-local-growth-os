@@ -271,6 +271,34 @@ website_audit_findings  scope (site|page), page_id, code, severity (info|low|med
 
 Events: `audit.requested`, `audit.completed`, `audit.failed`. Job type: `audit.run` with idempotency key `audit.run:<runId>`.
 
+`site_summary_json.crawlScope {pageCap, frontierRemaining}` is stored at finalisation since the audit score was added (absent on earlier runs).
+
+## website_performance_observations / website_audit_scores (implemented, migration 008)
+
+Performance evidence and the deterministic audit score for one audit run. Rules, weights and normalization: [`AUDIT_SCORE.md`](AUDIT_SCORE.md). Both are our own measurements (`retention_class = audit_evidence`), RLS-enabled and granted to the service role only. They are narrower than the logical `evidence_items` / `opportunity_scores` shapes below on purpose: typed columns for the metrics the score reads, and one JSON breakdown instead of a `score_evidence` join, because the audit score is a website-quality score and not the Opportunity Score.
+
+```text
+website_performance_observations   one row per (audit run, provider, strategy, URL); also the audit.performance job cursor
+  id (deterministic)  workspace_id  prospect_id  audit_run_id
+  provider  provider_version  strategy (mobile|desktop)  page_role (homepage in V1)  requested_url  final_url
+  status (pending|succeeded|failed)  attempts  error_code  error_summary
+  performance_score  accessibility_score  best_practices_score  seo_score            integers 0-100
+  fcp_ms  lcp_ms  cls  tbt_ms  speed_index_ms  tti_ms                                lab metrics
+  field_data_available  field_scope (url|origin)  field_lcp_ms  field_inp_ms  field_cls  field_overall_category (as returned)
+  run_warnings[]  observed_at  retention_class  created_at  updated_at
+  unique (audit_run_id, provider, strategy, requested_url)
+
+website_audit_scores               insert-only, one row per (audit run, scoring version)
+  id (deterministic)  workspace_id  prospect_id  audit_run_id
+  scoring_version (audit-score/v1)  score_status (complete|provisional|insufficient_evidence)
+  overall_score (null when insufficient_evidence)
+  technical_score  local_seo_score  content_structure_score  performance_score  crawl_score   null = not evaluated
+  evaluated_weight  evidence_coverage  breakdown_json  calculated_at  retention_class  created_at
+  unique (audit_run_id, scoring_version)
+```
+
+Events: `audit.performance_completed`, `audit.scored`. Job types: `audit.performance` (key `audit.performance:<runId>`) and `audit.score` (key `audit.score:<runId>:<scoringVersion>`).
+
 ---
 
 # 6. Contacts

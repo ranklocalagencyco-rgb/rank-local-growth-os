@@ -1,13 +1,17 @@
 import { registerAuditJobs } from "@/audit/jobs";
 import { SafeFetcher } from "@/audit/safe-fetch";
+import { registerScoreJobs } from "@/audit/score/jobs";
 import { getRuntimeConfig } from "@/config/env";
 import { createSupabaseAuditStore } from "@/data/audit-store";
 import { createSupabaseDiscoveryStore } from "@/data/discovery-store";
+import { createSupabasePerformanceStore, createSupabaseScoreStore } from "@/data/performance-store";
 import { getSupabaseAdminClient } from "@/db/client";
 import { registerDiscoveryJobs } from "@/discovery/jobs";
 import { getDiscoveryProvider } from "@/discovery/providers/registry";
 import { JobRegistry, processJobs, type ProcessJobsSummary } from "@/jobs/processor";
 import type { DbClient } from "@/jobs/queue";
+import { registerPerformanceJobs } from "@/performance/jobs";
+import { getPerformanceProvider } from "@/performance/providers/registry";
 
 /** Wires every background job type the application knows about. */
 export function createAppJobRegistry(client: DbClient): JobRegistry {
@@ -19,6 +23,8 @@ export function createAppJobRegistry(client: DbClient): JobRegistry {
     createFetcher: () => new SafeFetcher({ timeoutMs: config.auditRequestTimeoutMs, maxRedirects: config.auditMaxRedirects, maxBytes: config.auditMaxResponseBytes }),
     config,
   });
+  registerPerformanceJobs(registry, { store: createSupabasePerformanceStore(client), getProvider: getPerformanceProvider, config });
+  registerScoreJobs(registry, { store: createSupabaseScoreStore(client) });
   return registry;
 }
 

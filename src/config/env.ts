@@ -36,6 +36,18 @@ const runtimeConfigSchema = z.object({
   auditRequestTimeoutMs: z.coerce.number().int().min(1000).max(60_000).default(10_000),
   auditMaxResponseBytes: z.coerce.number().int().min(10_000).max(10_000_000).default(2_000_000),
   auditMaxRedirects: z.coerce.number().int().min(0).max(10).default(5),
+  /** Performance evidence provider. pagespeed (default): Google PageSpeed Insights v5, usable without an API key. none: skip performance, score without it. */
+  performanceProvider: z.enum(["pagespeed", "none"]).default("pagespeed"),
+  /** Comma-separated strategies measured per audit, homepage only. One provider request per strategy on the happy path. */
+  performanceStrategies: z
+    .string()
+    .default("mobile,desktop")
+    .transform((value) => [...new Set(value.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean))])
+    .pipe(z.array(z.enum(["mobile", "desktop"])).min(1).max(2)),
+  /** Hard cap on provider requests for one audit run, retries included. */
+  performanceMaxRequestsPerRun: z.coerce.number().int().min(1).max(10).default(4),
+  /** Timeout of one provider request. Bounded so one request always fits a job batch (src/performance/jobs.ts). */
+  performanceRequestTimeoutMs: z.coerce.number().int().min(5_000).max(38_000).default(35_000),
 });
 
 function optionalEnvironmentValue(value: string | undefined): string | undefined {
@@ -70,6 +82,10 @@ export function parseRuntimeConfig(environment: NodeJS.ProcessEnv = process.env)
     auditRequestTimeoutMs: optionalEnvironmentValue(environment.AUDIT_REQUEST_TIMEOUT_MS),
     auditMaxResponseBytes: optionalEnvironmentValue(environment.AUDIT_MAX_RESPONSE_BYTES),
     auditMaxRedirects: optionalEnvironmentValue(environment.AUDIT_MAX_REDIRECTS),
+    performanceProvider: optionalEnvironmentValue(environment.PERFORMANCE_PROVIDER),
+    performanceStrategies: optionalEnvironmentValue(environment.PERFORMANCE_STRATEGIES),
+    performanceMaxRequestsPerRun: optionalEnvironmentValue(environment.PERFORMANCE_MAX_REQUESTS_PER_RUN),
+    performanceRequestTimeoutMs: optionalEnvironmentValue(environment.PERFORMANCE_REQUEST_TIMEOUT_MS),
   });
 }
 

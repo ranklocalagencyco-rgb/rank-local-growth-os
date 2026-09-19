@@ -24,6 +24,21 @@ function fakeClient(queue: JobRow[]) {
 const silentLogger = { child: () => ({ debug() {}, info() {}, warn() {}, error() {} }), log() {} } as unknown as NonNullable<Parameters<typeof processJobs>[0]["logger"]>;
 
 describe("job processor", () => {
+  it("gives a job type its declared budget, and hands it back untouched when the batch has less than that left", async () => {
+    const deadlines: number[] = [];
+    const slow = () => new JobRegistry().register("test.job", z.object({ value: z.number() }), async (_payload, context) => { deadlines.push(context.deadline - Date.now()); return { status: "completed" }; }, { budgetMs: 42_000 });
+
+    const roomy = fakeClient([job({ id: "slow" })]);
+    expect(await processJobs({ client: roomy.client, registry: slow(), workerId: "test", timeBudgetMs: 45_000, logger: silentLogger })).toMatchObject({ claimed: 1, completed: 1 });
+    expect(deadlines[0]).toBeGreaterThan(41_000);
+    expect(deadlines[0]).toBeLessThanOrEqual(42_000);
+
+    const tight = fakeClient([job({ id: "slow" })]);
+    expect(await processJobs({ client: tight.client, registry: slow(), workerId: "test", timeBudgetMs: 20_000, logger: silentLogger })).toMatchObject({ claimed: 1, completed: 0, continued: 0, failed: 0 });
+    expect(deadlines).toHaveLength(1);
+    expect(tight.updates).toEqual([{ id: "slow", patch: expect.objectContaining({ status: "queued", attempts: 0 }) }]);
+  });
+
   it("completes, continues, and dead-letters according to handler outcomes", async () => {
     const { client, updates } = fakeClient([job({ id: "done" }), job({ id: "more" }), job({ id: "boom", attempts: 3 }), job({ id: "fatal" })]);
     const registry = new JobRegistry().register("test.job", z.object({ value: z.number() }), async (_payload, context) => {

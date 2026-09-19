@@ -1,0 +1,514 @@
+{
+  "id": "https://example.com/",
+  "analysisUTCTimestamp": "2026-09-19T14:17:54.444Z",
+  "loadingExperience": {
+    "metrics": {
+      "CUMULATIVE_LAYOUT_SHIFT_SCORE": {
+        "percentile": 0,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 10,
+            "proportion": 1
+          },
+          {
+            "min": 10,
+            "max": 25,
+            "proportion": 0
+          },
+          {
+            "min": 25,
+            "proportion": 0
+          }
+        ],
+        "category": "FAST"
+      },
+      "EXPERIMENTAL_TIME_TO_FIRST_BYTE": {
+        "percentile": 639,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 800,
+            "proportion": 0.8036
+          },
+          {
+            "min": 800,
+            "max": 1800,
+            "proportion": 0.1349
+          },
+          {
+            "min": 1800,
+            "proportion": 0.0615
+          }
+        ],
+        "category": "FAST"
+      },
+      "FIRST_CONTENTFUL_PAINT_MS": {
+        "percentile": 952,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 1800,
+            "proportion": 0.9024
+          },
+          {
+            "min": 1800,
+            "max": 3000,
+            "proportion": 0.0477
+          },
+          {
+            "min": 3000,
+            "proportion": 0.0499
+          }
+        ],
+        "category": "FAST"
+      },
+      "INTERACTION_TO_NEXT_PAINT": {
+        "percentile": 81,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 200,
+            "proportion": 0.9426
+          },
+          {
+            "min": 200,
+            "max": 500,
+            "proportion": 0.0397
+          },
+          {
+            "min": 500,
+            "proportion": 0.0178
+          }
+        ],
+        "category": "FAST"
+      },
+      "LARGEST_CONTENTFUL_PAINT_MS": {
+        "percentile": 939,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 2500,
+            "proportion": 0.939
+          },
+          {
+            "min": 2500,
+            "max": 4000,
+            "proportion": 0.0354
+          },
+          {
+            "min": 4000,
+            "proportion": 0.0257
+          }
+        ],
+        "category": "FAST"
+      }
+    },
+    "overall_category": "FAST"
+  },
+  "originLoadingExperience": {
+    "metrics": {
+      "CUMULATIVE_LAYOUT_SHIFT_SCORE": {
+        "percentile": 0,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 10,
+            "proportion": 1
+          },
+          {
+            "min": 10,
+            "max": 25,
+            "proportion": 0
+          },
+          {
+            "min": 25,
+            "proportion": 0
+          }
+        ],
+        "category": "FAST"
+      },
+      "EXPERIMENTAL_TIME_TO_FIRST_BYTE": {
+        "percentile": 638,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 800,
+            "proportion": 0.8035
+          },
+          {
+            "min": 800,
+            "max": 1800,
+            "proportion": 0.1344
+          },
+          {
+            "min": 1800,
+            "proportion": 0.0621
+          }
+        ],
+        "category": "FAST"
+      },
+      "FIRST_CONTENTFUL_PAINT_MS": {
+        "percentile": 951,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 1800,
+            "proportion": 0.9014
+          },
+          {
+            "min": 1800,
+            "max": 3000,
+            "proportion": 0.0487
+          },
+          {
+            "min": 3000,
+            "proportion": 0.0499
+          }
+        ],
+        "category": "FAST"
+      },
+      "INTERACTION_TO_NEXT_PAINT": {
+        "percentile": 81,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 200,
+            "proportion": 0.943
+          },
+          {
+            "min": 200,
+            "max": 500,
+            "proportion": 0.039
+          },
+          {
+            "min": 500,
+            "proportion": 0.0179
+          }
+        ],
+        "category": "FAST"
+      },
+      "LARGEST_CONTENTFUL_PAINT_MS": {
+        "percentile": 939,
+        "distributions": [
+          {
+            "min": 0,
+            "max": 2500,
+            "proportion": 0.9403
+          },
+          {
+            "min": 2500,
+            "max": 4000,
+            "proportion": 0.0344
+          },
+          {
+            "min": 4000,
+            "proportion": 0.0253
+          }
+        ],
+        "category": "FAST"
+      }
+    },
+    "overall_category": "FAST"
+  },
+  "lighthouseResult": {
+    "requestedUrl": "https://example.com/",
+    "finalUrl": "https://example.com/",
+    "finalDisplayedUrl": "https://example.com/",
+    "lighthouseVersion": "13.4.1",
+    "fetchTime": "2026-09-19T14:17:54.444Z",
+    "runWarnings": [],
+    "categories": {
+      "performance": {
+        "score": 1
+      },
+      "accessibility": {
+        "score": 0.96
+      },
+      "best-practices": {
+        "score": 0.96
+      },
+      "seo": {
+        "score": 0.8
+      }
+    },
+    "audits": {
+      "first-contentful-paint": {
+        "id": "first-contentful-paint",
+        "title": "First Contentful Paint",
+        "description": "First Contentful Paint marks the time at which the first text or image is painted. [Learn more about the First Contentful Paint metric](https://developer.chrome.com/docs/lighthouse/performance/first-contentful-paint/).",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0.8\u00a0s",
+        "numericValue": 757,
+        "numericUnit": "millisecond"
+      },
+      "largest-contentful-paint": {
+        "id": "largest-contentful-paint",
+        "title": "Largest Contentful Paint",
+        "description": "Largest Contentful Paint marks the time at which the largest text or image is painted. [Learn more about the Largest Contentful Paint metric](https://developer.chrome.com/docs/lighthouse/performance/lighthouse-largest-contentful-paint/)",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0.8\u00a0s",
+        "numericValue": 757,
+        "numericUnit": "millisecond"
+      },
+      "cumulative-layout-shift": {
+        "id": "cumulative-layout-shift",
+        "title": "Cumulative Layout Shift",
+        "description": "Cumulative Layout Shift measures the movement of visible elements within the viewport. [Learn more about the Cumulative Layout Shift metric](https://web.dev/articles/cls).",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0",
+        "details": {
+          "type": "debugdata",
+          "items": [
+            {
+              "cumulativeLayoutShiftMainFrame": 0,
+              "newEngineResultDiffered": false,
+              "newEngineResult": {
+                "cumulativeLayoutShift": 0,
+                "cumulativeLayoutShiftMainFrame": 0
+              }
+            }
+          ]
+        },
+        "numericValue": 0,
+        "numericUnit": "unitless"
+      },
+      "total-blocking-time": {
+        "id": "total-blocking-time",
+        "title": "Total Blocking Time",
+        "description": "Sum of all time periods between FCP and Time to Interactive, when task length exceeded 50ms, expressed in milliseconds. [Learn more about the Total Blocking Time metric](https://developer.chrome.com/docs/lighthouse/performance/lighthouse-total-blocking-time/).",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0\u00a0ms",
+        "numericValue": 0,
+        "numericUnit": "millisecond"
+      },
+      "speed-index": {
+        "id": "speed-index",
+        "title": "Speed Index",
+        "description": "Speed Index shows how quickly the contents of a page are visibly populated. [Learn more about the Speed Index metric](https://developer.chrome.com/docs/lighthouse/performance/speed-index/).",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0.8\u00a0s",
+        "numericValue": 757,
+        "numericUnit": "millisecond"
+      },
+      "interactive": {
+        "id": "interactive",
+        "title": "Time to Interactive",
+        "description": "Time to Interactive is the amount of time it takes for the page to become fully interactive. [Learn more about the Time to Interactive metric](https://developer.chrome.com/docs/lighthouse/performance/interactive/).",
+        "score": 1,
+        "scoreDisplayMode": "numeric",
+        "displayValue": "0.8\u00a0s",
+        "numericValue": 757,
+        "numericUnit": "millisecond"
+      },
+      "final-screenshot": {
+        "id": "final-screenshot",
+        "title": "Final Screenshot",
+        "description": "The last screenshot captured of the pageload.",
+        "score": 1,
+        "scoreDisplayMode": "informative",
+        "details": {
+          "timestamp": 1216438893244,
+          "type": "screenshot",
+          "data": "data:image/jpeg;base64,/9j/TRIMMED",
+          "timing": 373
+        }
+      },
+      "screenshot-thumbnails": {
+        "id": "screenshot-thumbnails",
+        "title": "Screenshot Thumbnails",
+        "description": "This is what the load of your site looked like.",
+        "score": 1,
+        "scoreDisplayMode": "informative",
+        "details": {
+          "type": "filmstrip",
+          "scale": 3000,
+          "items": [
+            {
+              "data": "data:image/jpeg;base64,/9j/TRIMMED",
+              "timing": 375,
+              "timestamp": 1216438894919
+            },
+            {
+              "timestamp": 1216439269919,
+              "data": "data:image/jpeg;base64,/9j/TRIMMED",
+              "timing": 750
+            }
+          ]
+        }
+      },
+      "network-requests": {
+        "id": "network-requests",
+        "title": "Network Requests",
+        "description": "Lists the network requests that were made during page load.",
+        "score": 1,
+        "scoreDisplayMode": "informative",
+        "details": {
+          "debugData": {
+            "initiators": [],
+            "networkStartTimeTs": 1216438520073.0002,
+            "type": "debugdata"
+          },
+          "type": "table",
+          "items": [
+            {
+              "rendererStartTime": 0,
+              "networkRequestTime": 3.622999906539917,
+              "statusCode": 200,
+              "transferSize": 563,
+              "resourceSize": 559,
+              "sessionTargetType": "page",
+              "experimentalFromMainFrame": true,
+              "networkEndTime": 35.562000036239624,
+              "resourceType": "Document",
+              "entity": "example.com",
+              "protocol": "h2",
+              "priority": "VeryHigh",
+              "url": "https://example.com/",
+              "finished": true,
+              "mimeType": "text/html",
+              "cache": "none"
+            }
+          ],
+          "headings": [
+            {
+              "key": "url",
+              "label": "URL",
+              "valueType": "url"
+            },
+            {
+              "valueType": "text",
+              "key": "protocol",
+              "label": "Protocol"
+            },
+            {
+              "valueType": "ms",
+              "key": "networkRequestTime",
+              "label": "Network Request Time",
+              "granularity": 1
+            },
+            {
+              "label": "Network End Time",
+              "valueType": "ms",
+              "key": "networkEndTime",
+              "granularity": 1
+            },
+            {
+              "granularity": 1,
+              "key": "transferSize",
+              "label": "Transfer Size",
+              "displayUnit": "kb",
+              "valueType": "bytes"
+            },
+            {
+              "valueType": "bytes",
+              "granularity": 1,
+              "displayUnit": "kb",
+              "label": "Resource Size",
+              "key": "resourceSize"
+            },
+            {
+              "key": "statusCode",
+              "valueType": "text",
+              "label": "Status Code"
+            },
+            {
+              "key": "mimeType",
+              "valueType": "text",
+              "label": "MIME Type"
+            },
+            {
+              "key": "resourceType",
+              "label": "Resource Type",
+              "valueType": "text"
+            }
+          ]
+        }
+      },
+      "metrics": {
+        "id": "metrics",
+        "title": "Metrics",
+        "description": "Collects all available metrics.",
+        "score": 1,
+        "scoreDisplayMode": "informative",
+        "details": {
+          "type": "debugdata",
+          "items": [
+            {
+              "observedFirstPaint": 75,
+              "observedLargestContentfulPaintTs": 1216438594722,
+              "observedSpeedIndexTs": 1216438600964,
+              "observedTraceEndTs": 1216440917760,
+              "totalBlockingTime": 0,
+              "observedTimeOrigin": 0,
+              "observedLastVisualChangeTs": 1216438892919,
+              "timeToFirstByte": 601,
+              "observedFirstContentfulPaintTs": 1216438594722,
+              "observedFirstContentfulPaintAllFramesTs": 1216438594722,
+              "observedNavigationStartTs": 1216438519919,
+              "observedFirstVisualChange": 75,
+              "observedDomContentLoadedTs": 1216438584563,
+              "observedFirstVisualChangeTs": 1216438594919,
+              "observedCumulativeLayoutShift": 0,
+              "interactive": 757,
+              "observedDomContentLoaded": 65,
+              "cumulativeLayoutShift": 0,
+              "firstContentfulPaint": 757,
+              "observedLargestContentfulPaintAllFrames": 75,
+              "cumulativeLayoutShiftMainFrame": 0,
+              "observedNavigationStart": 0,
+              "largestContentfulPaint": 757,
+              "observedFirstContentfulPaint": 75,
+              "maxPotentialFID": 16,
+              "observedTimeOriginTs": 1216438519919,
+              "observedLoad": 65,
+              "observedLastVisualChange": 373,
+              "observedLoadTs": 1216438584730,
+              "observedLargestContentfulPaintAllFramesTs": 1216438594722,
+              "observedFirstContentfulPaintAllFrames": 75,
+              "observedSpeedIndex": 81,
+              "observedCumulativeLayoutShiftMainFrame": 0,
+              "observedLargestContentfulPaint": 75,
+              "observedFirstPaintTs": 1216438594722,
+              "speedIndex": 757,
+              "observedTraceEnd": 2398
+            },
+            {
+              "lcpInvalidated": false
+            }
+          ]
+        },
+        "numericValue": 757,
+        "numericUnit": "millisecond"
+      },
+      "is-on-https": {
+        "id": "is-on-https",
+        "title": "Uses HTTPS",
+        "description": "All sites should be protected with HTTPS, even ones that don't handle sensitive data. This includes avoiding [mixed content](https://developers.google.com/web/fundamentals/security/prevent-mixed-content/what-is-mixed-content), where some resources are loaded over HTTP despite the initial request being served over HTTPS. HTTPS prevents intruders from tampering with or passively listening in on the communications between your app and your users, and is a prerequisite for HTTP/2 and many new web platform APIs. [Learn more about HTTPS](https://developer.chrome.com/docs/lighthouse/pwa/is-on-https/).",
+        "score": 1,
+        "scoreDisplayMode": "binary",
+        "details": {
+          "type": "table",
+          "items": [],
+          "headings": [
+            {
+              "valueType": "url",
+              "key": "url",
+              "label": "Insecure URL"
+            },
+            {
+              "valueType": "text",
+              "key": "resolution",
+              "label": "Request Resolution"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

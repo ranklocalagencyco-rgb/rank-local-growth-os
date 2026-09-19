@@ -9,6 +9,8 @@ describe("no-llm-in-crawler scanner", () => {
     expect(isProtectedPath("src/discovery/website/verify.ts")).toBe(true);
     expect(isProtectedPath("src/audit/crawler.ts")).toBe(true);
     expect(isProtectedPath("src/crawler/fetch.ts")).toBe(true);
+    expect(isProtectedPath("src/performance/providers/pagespeed.ts")).toBe(true);
+    expect(isProtectedPath("src/audit/score/calculate.ts")).toBe(true);
     expect(isProtectedPath("src/discovery/providers/dataforseo.ts")).toBe(false);
     expect(isProtectedPath("src/ai/model-router.ts")).toBe(false);
     expect(isProtectedPath("app/page.tsx")).toBe(false);

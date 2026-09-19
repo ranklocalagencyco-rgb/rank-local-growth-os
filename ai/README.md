@@ -30,7 +30,7 @@ The constitution lives in `AGENTS.md` (non-negotiable rules, source-of-truth doc
 |---|---|
 | `rules/working-tree-ownership.md` | Every coding agent, on every slice, whatever the model or vendor: one active implementation owner at a time, reviewers read-only, Git authoritative, explicit transfer and crash recovery |
 | `rules/jobs-contract.md` | Every background job handler |
-| `rules/no-llm-in-crawler.md` | Code under `src/discovery/website/`, `src/audit/`, `src/crawler/` |
+| `rules/no-llm-in-crawler.md` | Code under `src/discovery/website/`, `src/audit/`, `src/crawler/`, `src/performance/` |
 
 `rules/working-tree-ownership.md` is the first thing an agent loads before implementing: it is how Claude Code, Codex, ChatGPT coding agents, Gemini, Cursor, Windsurf and future tools share one working tree without depending on any vendor's session state. It uses only plain Git commands, so no adapter is needed beyond the pointer in `AGENTS.md`.
 

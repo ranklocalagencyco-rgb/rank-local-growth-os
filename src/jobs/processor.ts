@@ -25,13 +25,20 @@ export class NonRetryableJobError extends Error {
   }
 }
 
-type Registration = { schema: z.ZodType<unknown>; handler: JobHandler<unknown> };
+/**
+ * Optional per-type settings. `budgetMs` is for handlers that wrap one slow external call (e.g. a performance provider)
+ * and cannot yield inside it: the job gets that budget instead of the default per-job budget, and is handed back
+ * untouched when the batch has less than that left, so a batch never overruns its own time budget.
+ */
+export type JobRegistrationOptions = { budgetMs?: number };
+
+type Registration = { schema: z.ZodType<unknown>; handler: JobHandler<unknown>; budgetMs?: number };
 
 export class JobRegistry {
   private readonly handlers = new Map<string, Registration>();
 
-  register<TSchema extends z.ZodType>(type: string, schema: TSchema, handler: JobHandler<z.infer<TSchema>>): this {
-    this.handlers.set(type, { schema, handler: handler as JobHandler<unknown> });
+  register<TSchema extends z.ZodType>(type: string, schema: TSchema, handler: JobHandler<z.infer<TSchema>>, options: JobRegistrationOptions = {}): this {
+    this.handlers.set(type, { schema, handler: handler as JobHandler<unknown>, budgetMs: options.budgetMs });
     return this;
   }
 
@@ -109,7 +116,13 @@ export async function processJobs(options: ProcessJobsOptions): Promise<ProcessJ
       continue;
     }
 
-    const context: JobContext = { client, job, traceId: job.trace_id, deadline: Date.now() + Math.min(perJobBudgetMs, remaining), logger: jobLogger };
+    if (registration.budgetMs !== undefined && remaining < registration.budgetMs) {
+      // A declared budget is a minimum: without it the handler's one slow call could not finish. Hand back for a fresh batch.
+      await requeueJob(client, job.id, 1);
+      continue;
+    }
+
+    const context: JobContext = { client, job, traceId: job.trace_id, deadline: Date.now() + Math.min(registration.budgetMs ?? perJobBudgetMs, remaining), logger: jobLogger };
 
     try {
       jobLogger.info("job.start");

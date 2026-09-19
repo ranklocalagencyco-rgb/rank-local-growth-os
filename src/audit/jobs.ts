@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { buildPageOutcome, discoverSitemaps, enqueueFrontier, initialCrawlState, nextFrontierEntry, parseCrawlState, recordLinkContext, siteDomainOf, siteOrigin, summariseSite, type CrawlState } from "@/audit/crawler";
 import { AUDIT_CRAWLER_VERSION } from "@/audit/extract";
+import { enqueueAuditFollowUp } from "@/audit/follow-up";
+import { AUDIT_SCORE_VERSION } from "@/audit/score/rules";
 import { AUDIT_RULES_VERSION, crossPageFindings, pageFindings, pageRuleContext, siteFindings, type FindingInput } from "@/audit/findings";
 import { buildLinkGraph } from "@/audit/site-evidence";
 import type { SafeFetcher, SafeFetchReason, SafeFetchResult } from "@/audit/safe-fetch";
@@ -23,7 +25,7 @@ export type AuditJobDependencies = {
   store: AuditStore;
   /** One fetcher per invocation; closed when the invocation ends so pinned hosts never outlive the crawl. */
   createFetcher: () => SafeFetcher;
-  config: Pick<RuntimeConfig, "auditMaxPages">;
+  config: Pick<RuntimeConfig, "auditMaxPages" | "performanceProvider">;
   now?: () => Date;
 };
 
@@ -53,7 +55,14 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
 
   const run = await store.getRun(workspaceId, payload.auditRunId);
   if (!run) throw new NonRetryableJobError("Audit run not found");
-  if (run.status === "completed" || run.status === "failed") return { status: "completed" };
+  // Performance evidence and the score are separate jobs, enqueued once the crawl has completed. Re-asserted here (idempotent
+  // by key) so a crash between the status flip and the enqueue can never leave a completed audit without its follow-up.
+  const enqueueFollowUp = () => enqueueAuditFollowUp(store, { workspaceId, auditRunId: run.id, prospectId: run.prospect_id, traceId: context.job.trace_id, performanceEnabled: deps.config.performanceProvider !== "none", scoringVersion: AUDIT_SCORE_VERSION });
+  if (run.status === "completed") {
+    await enqueueFollowUp();
+    return { status: "completed" };
+  }
+  if (run.status === "failed") return { status: "completed" };
 
   const failRun = async (message: string): Promise<never> => {
     await store.updateRun(run.id, { status: "failed", failedAt: now().toISOString(), errorSummary: message });
@@ -118,7 +127,8 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
 
     // Finalise from stored rows so a retry recomputes exactly the same findings.
     const pages = await store.listPages(run.id);
-    const summary = summariseSite(state, pages);
+    // crawlScope records how the crawl ended, so the score can tell "no such page" from "stopped at the page cap" (docs/AUDIT_SCORE.md).
+    const summary = { ...summariseSite(state, pages), crawlScope: { pageCap: deps.config.auditMaxPages, frontierRemaining: state.frontier.length } };
     const graph = buildLinkGraph(pages);
     const findings: FindingInput[] = [...pages.flatMap((page) => pageFindings(page, pageRuleContext(graph, page))), ...crossPageFindings(pages, summary), ...siteFindings(summary, pages)];
     const rows: AuditFindingInsert[] = findings.map((finding) => ({ workspaceId, auditRunId: run.id, prospectId: run.prospect_id, pageId: finding.pageId, scope: finding.scope, code: finding.code, severity: finding.severity, evidence: finding.evidence, ruleVersion: AUDIT_RULES_VERSION }));
@@ -126,6 +136,7 @@ export async function runWebsiteAudit(payload: WebsiteAuditPayload, context: Pic
     await store.updateRun(run.id, { status: "completed", completedAt: now().toISOString(), errorSummary: null, siteSummary: summary as unknown as Record<string, unknown>, crawlState: { ...state, frontier: [] } as unknown as Record<string, unknown>, pagesAttempted: counters.attempted, pagesSucceeded: counters.succeeded, pagesFailed: counters.failed });
     await store.recordActivity({ workspaceId, prospectId: run.prospect_id, eventType: "audit.completed", summary: `Website audit completed: ${summary.pagesCrawled} page${summary.pagesCrawled === 1 ? "" : "s"} crawled, ${findings.length} finding${findings.length === 1 ? "" : "s"}.${summary.renderedContentEvaluated ? "" : " Rendered content was not evaluated (client-rendered site)."}`, metadata: { auditRunId: run.id, pagesCrawled: summary.pagesCrawled, findings: findings.length, renderedContentEvaluated: summary.renderedContentEvaluated }, idempotencyKey: `audit.completed:${run.id}` });
     await store.recordDomainEvent({ workspaceId, aggregateType: "website_audit_run", aggregateId: run.id, eventType: "audit.completed", payload: { prospectId: run.prospect_id, pagesCrawled: summary.pagesCrawled, findings: findings.length, crawlerVersion: AUDIT_CRAWLER_VERSION, rulesVersion: AUDIT_RULES_VERSION }, idempotencyKey: `audit.completed:${run.id}` });
+    await enqueueFollowUp();
     context.logger.info("audit.completed", { auditRunId: run.id, pagesCrawled: summary.pagesCrawled, findings: findings.length, renderedContentEvaluated: summary.renderedContentEvaluated });
     return { status: "completed" };
   } finally {

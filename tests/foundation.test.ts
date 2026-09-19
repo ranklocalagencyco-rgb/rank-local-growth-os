@@ -23,6 +23,14 @@ const workspaceId = "11111111-1111-4111-8111-111111111111";
     expect(() => parseRuntimeConfig({ NODE_ENV: "test", DISCOVERY_PROVIDER: "hybrid" })).toThrow();
   });
 
+  it("defaults performance to keyless PageSpeed with both strategies and bounded requests", () => {
+    expect(parseRuntimeConfig({ NODE_ENV: "test" })).toMatchObject({ performanceProvider: "pagespeed", performanceStrategies: ["mobile", "desktop"], performanceMaxRequestsPerRun: 4, performanceRequestTimeoutMs: 35_000 });
+    expect(parseRuntimeConfig({ NODE_ENV: "test", PERFORMANCE_PROVIDER: "none", PERFORMANCE_STRATEGIES: " Mobile , mobile " })).toMatchObject({ performanceProvider: "none", performanceStrategies: ["mobile"] });
+    expect(() => parseRuntimeConfig({ NODE_ENV: "test", PERFORMANCE_STRATEGIES: "tablet" })).toThrow();
+    expect(() => parseRuntimeConfig({ NODE_ENV: "test", PERFORMANCE_MAX_REQUESTS_PER_RUN: "500" })).toThrow();
+    expect(() => parseRuntimeConfig({ NODE_ENV: "test", PERFORMANCE_REQUEST_TIMEOUT_MS: "90000" })).toThrow();
+  });
+
   it("rejects access to another workspace", () => {
     expect(() => requireWorkspaceId("99999999-9999-4999-8999-999999999999", { workspaceId, userId: "user", role: "owner" })).toThrow("Workspace access denied");
   });

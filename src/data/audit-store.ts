@@ -1,7 +1,7 @@
 import type { AuditFindingInsert, AuditPageInsert, AuditRunPatch, AuditStore } from "@/audit/store";
 import type { WebsiteAuditRun } from "@/db/types";
 import { deterministicUuid } from "@/domain/deterministic-id";
-import type { DbClient } from "@/jobs/queue";
+import { enqueueJob, type DbClient } from "@/jobs/queue";
 
 // Supabase-backed AuditStore. Every write is idempotent (deterministic ids + on-conflict ignore) so a retried job never duplicates evidence.
 
@@ -68,6 +68,10 @@ export function createSupabaseAuditStore(client: DbClient): AuditStore {
         { onConflict: "id", ignoreDuplicates: true },
       );
       if (error) throw new Error(`Unable to store audit findings: ${error.message}`);
+    },
+
+    async enqueue(input) {
+      await enqueueJob(client, input);
     },
 
     async recordActivity(input) {

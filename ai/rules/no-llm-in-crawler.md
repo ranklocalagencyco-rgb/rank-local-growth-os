@@ -5,8 +5,9 @@
 ## Protected paths
 
 - `src/discovery/website/**` (website probe and verifier)
-- `src/audit/**` (website audit crawler, parsers, findings)
+- `src/audit/**` (website audit crawler, parsers, findings, and the deterministic audit score under `src/audit/score/`)
 - `src/crawler/**` (reserved for future crawl infrastructure)
+- `src/performance/**` (performance provider adapters and the `audit.performance` job)
 
 ## Forbidden inside protected paths
 

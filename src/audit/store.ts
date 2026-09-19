@@ -41,6 +41,8 @@ export interface AuditStore {
   listPages(runId: string): Promise<WebsiteAuditPage[]>;
   /** Idempotent: finding ids derive from (run, page, code). */
   insertFindings(rows: AuditFindingInsert[]): Promise<void>;
+  /** Idempotent by (workspace, idempotencyKey): enqueueing the same follow-up twice returns the existing job. */
+  enqueue(input: { workspaceId: string; type: string; idempotencyKey: string; payload: Record<string, unknown>; maxAttempts?: number; traceId?: string }): Promise<void>;
   recordActivity(input: { workspaceId: string; prospectId: string; eventType: string; summary: string; metadata?: Record<string, unknown>; idempotencyKey: string }): Promise<void>;
   recordDomainEvent(input: { workspaceId: string; aggregateType: string; aggregateId: string; eventType: string; payload: Record<string, unknown>; idempotencyKey: string }): Promise<void>;
 }
